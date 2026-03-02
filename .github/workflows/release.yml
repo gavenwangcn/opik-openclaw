@@ -87,9 +87,16 @@ jobs:
         if: steps.exists.outputs.already_published == 'false'
         run: npm pack --dry-run
 
+      - name: Prepare trusted publishing auth
+        if: steps.exists.outputs.already_published == 'false'
+        run: |
+          npm config delete //registry.npmjs.org/:_authToken || true
+
       - name: Publish to npm with provenance
         if: steps.exists.outputs.already_published == 'false'
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ""
 
       - name: Report already-published release
         if: steps.exists.outputs.already_published == 'true'

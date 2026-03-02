@@ -24,7 +24,9 @@
   },
   "files": [
     "index.ts",
-    "src",
+    "src/configure.ts",
+    "src/service.ts",
+    "src/types.ts",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"

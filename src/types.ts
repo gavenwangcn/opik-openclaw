@@ -1,5 +1,42 @@
 import type { Span, Trace } from "opik";
 
+export type OpikPluginConfig = {
+  enabled?: boolean;
+  apiKey?: string;
+  apiUrl?: string;
+  projectName?: string;
+  workspaceName?: string;
+  tags?: string[];
+};
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+export function parseOpikPluginConfig(raw: unknown): OpikPluginConfig {
+  const cfg = asObject(raw);
+  const tagsRaw = cfg.tags;
+  const tags = Array.isArray(tagsRaw)
+    ? tagsRaw.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+
+  return {
+    enabled: typeof cfg.enabled === "boolean" ? cfg.enabled : undefined,
+    apiKey: asOptionalString(cfg.apiKey),
+    apiUrl: asOptionalString(cfg.apiUrl),
+    projectName: asOptionalString(cfg.projectName),
+    workspaceName: asOptionalString(cfg.workspaceName),
+    tags,
+  };
+}
+
 /** Active trace state for a single agent run, keyed by sessionKey. */
 export type ActiveTrace = {
   trace: Trace;

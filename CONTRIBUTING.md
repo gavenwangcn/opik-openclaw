@@ -14,8 +14,8 @@ Thanks for contributing to `@comet-ml/openclaw-opik`.
 
 Prerequisites:
 
-- Node.js `>=20.11.0`
-- npm
+- Node.js `>=22.12.0`
+- npm `>=11`
 
 Clone and bootstrap:
 

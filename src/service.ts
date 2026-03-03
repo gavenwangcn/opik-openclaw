@@ -1,6 +1,3 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, extname, isAbsolute, resolve } from "node:path";
-import { homedir } from "node:os";
 import type {
   DiagnosticEventPayload,
   OpenClawPluginApi,
@@ -8,313 +5,41 @@ import type {
 } from "openclaw/plugin-sdk";
 import { onDiagnosticEvent } from "openclaw/plugin-sdk";
 import { Opik, type Span, type Trace } from "opik";
+import { createAttachmentUploader } from "./service/attachment-uploader.js";
+import { registerLlmHooks } from "./service/hooks/llm.js";
+import { registerSubagentHooks } from "./service/hooks/subagent.js";
+import { registerToolHooks } from "./service/hooks/tool.js";
+import {
+  DEFAULT_ATTACHMENT_BASE_URL,
+  DEFAULT_FLUSH_RETRY_BASE_DELAY_MS,
+  DEFAULT_FLUSH_RETRY_COUNT,
+  DEFAULT_STALE_SWEEP_INTERVAL_MS,
+  DEFAULT_STALE_TRACE_TIMEOUT_MS,
+  MAX_FLUSH_RETRY_DELAY_MS,
+  OPIK_PLUGIN_ID,
+} from "./service/constants.js";
+import {
+  asNonEmptyString,
+  asNonNegativeNumber,
+  formatError,
+  hasCostUsageFields,
+  hasUsageFields,
+  mapUsageToOpikTokens,
+  mergeDefinedConfig,
+  normalizeProvider,
+  resolveChannelId,
+  resolveRunId,
+  resolveToolCallId,
+  resolveTrigger,
+  sleep,
+} from "./service/helpers.js";
+import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-sanitizer.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
-
-/** Map OpenClaw usage fields to Opik's expected token field names. */
-function mapUsageToOpikTokens(
-  usage: Record<string, unknown> | undefined,
-): Record<string, number> | undefined {
-  if (!usage) return undefined;
-  const mapped: Record<string, number> = {};
-  if (usage.input != null) mapped.prompt_tokens = usage.input as number;
-  if (usage.output != null) mapped.completion_tokens = usage.output as number;
-  if (usage.total != null) mapped.total_tokens = usage.total as number;
-  if (usage.cacheRead != null) mapped.cache_read_tokens = usage.cacheRead as number;
-  if (usage.cacheWrite != null) mapped.cache_write_tokens = usage.cacheWrite as number;
-  return Object.keys(mapped).length > 0 ? mapped : undefined;
-}
-
-const DEFAULT_STALE_TRACE_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_STALE_SWEEP_INTERVAL_MS = 60 * 1000;
-const DEFAULT_FLUSH_RETRY_COUNT = 2;
-const DEFAULT_FLUSH_RETRY_BASE_DELAY_MS = 250;
-const MAX_FLUSH_RETRY_DELAY_MS = 5000;
-const OPIK_PLUGIN_ID = "opik-openclaw";
-const LOCAL_ATTACHMENT_UPLOAD_MAGIC_ID = "BEMinIO";
-const ATTACHMENT_UPLOAD_PART_SIZE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_ATTACHMENT_BASE_URL = "https://www.comet.com/opik/api";
-const MEDIA_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".bmp",
-  ".tif",
-  ".tiff",
-  ".heic",
-  ".heif",
-  ".svg",
-  ".mp3",
-  ".wav",
-  ".m4a",
-  ".aac",
-  ".ogg",
-  ".oga",
-  ".flac",
-  ".opus",
-  ".caf",
-  ".weba",
-  ".webm",
-  ".mp4",
-  ".mov",
-  ".mkv",
-]);
-const LOCAL_MEDIA_PATH_RE =
-  /(?:^|[\s|[(])((?:~\/|\/)[^|\]\n\r]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?:\s*\([^)]+\))?/gi;
-const MEDIA_SCHEME_LOCAL_PATH_RE =
-  /\bmedia:((?:~\/|\/)[^\s"'`]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?=[\s"'`]|$)/gi;
 
 type ServiceLogger = {
   info: (message: string) => void;
   warn: (message: string) => void;
 };
-
-function mergeDefinedConfig(
-  base: OpikPluginConfig,
-  override: OpikPluginConfig,
-): OpikPluginConfig {
-  const merged: OpikPluginConfig = { ...base };
-  const mutable = merged as Record<string, unknown>;
-  for (const [key, value] of Object.entries(override)) {
-    if (value === undefined) continue;
-    mutable[key] = value;
-  }
-  return merged;
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function resolveChannelId(ctx: Record<string, unknown>): string | undefined {
-  return asNonEmptyString(ctx.channelId) ?? asNonEmptyString(ctx.messageProvider);
-}
-
-function resolveTrigger(ctx: Record<string, unknown>): string | undefined {
-  return asNonEmptyString(ctx.trigger);
-}
-
-function asNonNegativeNumber(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    return undefined;
-  }
-  return value;
-}
-
-function normalizeProvider(value: unknown): string | undefined {
-  const raw = asNonEmptyString(value);
-  if (!raw) return undefined;
-
-  const normalized = raw.trim().toLowerCase();
-  if (normalized.length === 0) return undefined;
-
-  if (
-    normalized === "openai-codex" ||
-    normalized === "openai_codex" ||
-    normalized === "codex" ||
-    (normalized.includes("openai") && normalized.includes("codex"))
-  ) {
-    return "openai";
-  }
-
-  return normalized;
-}
-
-const MEDIA_IMAGE_REFERENCE_RE = /\bmedia:(?:https?:\/\/[^\s"'`]+|\.[/][^\s"'`]+|[/][^\s"'`]+|[^\s"'`]+)\.(?:jpe?g|png|webp|gif)(?=[\s"'`]|$)/gi;
-
-function sanitizeStringForOpik(value: string): string {
-  return value.replace(MEDIA_IMAGE_REFERENCE_RE, "media:<image-ref>");
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
-function sanitizeValueForOpik(value: unknown): unknown {
-  if (typeof value === "string") {
-    return sanitizeStringForOpik(value);
-  }
-
-  if (Array.isArray(value)) {
-    let changed = false;
-    const next = value.map((item) => {
-      const sanitized = sanitizeValueForOpik(item);
-      if (sanitized !== item) changed = true;
-      return sanitized;
-    });
-    return changed ? next : value;
-  }
-
-  if (isPlainObject(value)) {
-    let changed = false;
-    const next: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-      const sanitized = sanitizeValueForOpik(child);
-      next[key] = sanitized;
-      if (sanitized !== child) changed = true;
-    }
-    return changed ? next : value;
-  }
-
-  return value;
-}
-
-function normalizeLocalMediaPath(candidate: string): string | undefined {
-  const trimmed = candidate.trim().replace(/[),.;:]+$/, "");
-  if (!trimmed) return undefined;
-
-  const expanded = trimmed.startsWith("~/") ? resolve(homedir(), trimmed.slice(2)) : trimmed;
-  const normalized = resolve(expanded);
-  if (!isAbsolute(normalized)) return undefined;
-
-  const extension = extname(normalized).toLowerCase();
-  if (!MEDIA_EXTENSIONS.has(extension)) return undefined;
-  return normalized;
-}
-
-function collectMediaPathsFromString(value: string, target: Set<string>): void {
-  for (const match of value.matchAll(LOCAL_MEDIA_PATH_RE)) {
-    const candidate = normalizeLocalMediaPath(match[1] ?? "");
-    if (candidate) target.add(candidate);
-  }
-  for (const match of value.matchAll(MEDIA_SCHEME_LOCAL_PATH_RE)) {
-    const candidate = normalizeLocalMediaPath(match[1] ?? "");
-    if (candidate) target.add(candidate);
-  }
-}
-
-function collectMediaPathsFromUnknown(value: unknown, target: Set<string>): void {
-  if (typeof value === "string") {
-    collectMediaPathsFromString(value, target);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectMediaPathsFromUnknown(item, target);
-    }
-    return;
-  }
-  if (isPlainObject(value)) {
-    for (const child of Object.values(value)) {
-      collectMediaPathsFromUnknown(child, target);
-    }
-  }
-}
-
-function guessMimeType(filePath: string): string {
-  switch (extname(filePath).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    case ".tif":
-    case ".tiff":
-      return "image/tiff";
-    case ".heic":
-      return "image/heic";
-    case ".heif":
-      return "image/heif";
-    case ".svg":
-      return "image/svg+xml";
-    case ".mp3":
-      return "audio/mpeg";
-    case ".wav":
-      return "audio/wav";
-    case ".m4a":
-      return "audio/mp4";
-    case ".aac":
-      return "audio/aac";
-    case ".ogg":
-    case ".oga":
-      return "audio/ogg";
-    case ".flac":
-      return "audio/flac";
-    case ".opus":
-      return "audio/opus";
-    case ".caf":
-      return "audio/x-caf";
-    case ".weba":
-      return "audio/webm";
-    case ".webm":
-      return "video/webm";
-    case ".mp4":
-      return "video/mp4";
-    case ".mov":
-      return "video/quicktime";
-    case ".mkv":
-      return "video/x-matroska";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function resolveEntityId(entity: unknown): string | undefined {
-  if (!entity || typeof entity !== "object") return undefined;
-  const maybeEntity = entity as { id?: unknown; data?: { id?: unknown } };
-  const id = maybeEntity.data?.id ?? maybeEntity.id;
-  return typeof id === "string" && id.length > 0 ? id : undefined;
-}
-
-function hasUsageFields(usage: ActiveTrace["usage"]): boolean {
-  return (
-    usage.input != null ||
-    usage.output != null ||
-    usage.cacheRead != null ||
-    usage.cacheWrite != null ||
-    usage.total != null
-  );
-}
-
-function hasCostUsageFields(costMeta: ActiveTrace["costMeta"]): boolean {
-  return (
-    costMeta.usageInput != null ||
-    costMeta.usageOutput != null ||
-    costMeta.usageCacheRead != null ||
-    costMeta.usageCacheWrite != null ||
-    costMeta.usageTotal != null
-  );
-}
-
-function resolveToolCallId(
-  event: Record<string, unknown>,
-  ctx: Record<string, unknown>,
-): string | undefined {
-  return asNonEmptyString(event.toolCallId) ?? asNonEmptyString(ctx.toolCallId);
-}
-
-function resolveRunId(event: Record<string, unknown>, ctx: Record<string, unknown>): string | undefined {
-  return asNonEmptyString(event.runId) ?? asNonEmptyString(ctx.runId);
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.stack ?? err.message;
-  }
-  if (typeof err === "string") {
-    return err;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 export function createOpikService(
   api: OpenClawPluginApi,
@@ -340,8 +65,12 @@ export function createOpikService(
   let attachmentBaseUrl = DEFAULT_ATTACHMENT_BASE_URL;
 
   let flushQueue: Promise<void> = Promise.resolve();
-  let attachmentQueue: Promise<void> = Promise.resolve();
-  const uploadedAttachmentKeys = new Set<string>();
+  const attachmentUploader = createAttachmentUploader({
+    getClient: () => client,
+    getAttachmentBaseUrl: () => attachmentBaseUrl,
+    onWarn: (message) => log.warn(message),
+    formatError,
+  });
 
   const exporterMetrics = {
     traceUpdateErrors: 0,
@@ -506,164 +235,6 @@ export function createOpikService(
     flushQueue = flushQueue.then(() => flushWithRetry(reason)).catch(() => undefined);
   }
 
-  function scheduleAttachmentUpload(job: () => Promise<void>): void {
-    attachmentQueue = attachmentQueue.then(job).catch((err: unknown) => {
-      log.warn(`opik: attachment upload task failed: ${formatError(err)}`);
-    });
-  }
-
-  async function uploadFileAttachment(params: {
-    entityType: "trace" | "span";
-    entityId: string;
-    projectName: string;
-    filePath: string;
-    reason: string;
-  }): Promise<void> {
-    if (!client) return;
-
-    const existingKey = `${params.entityType}:${params.entityId}:${params.filePath}`;
-    if (uploadedAttachmentKeys.has(existingKey)) return;
-    uploadedAttachmentKeys.add(existingKey);
-
-    const currentClient = client as Opik & {
-      api?: {
-        attachments?: {
-          startMultiPartUpload: (request: {
-            fileName: string;
-            numOfFileParts: number;
-            mimeType?: string;
-            projectName?: string;
-            entityType: "trace" | "span";
-            entityId: string;
-            path: string;
-          }) => Promise<{ uploadId: string; preSignUrls: string[] }>;
-          completeMultiPartUpload: (request: {
-            fileName: string;
-            projectName?: string;
-            entityType: "trace" | "span";
-            entityId: string;
-            fileSize: number;
-            mimeType?: string;
-            uploadId: string;
-            uploadedFileParts: Array<{ eTag: string; partNumber: number }>;
-          }) => Promise<void>;
-        };
-      };
-    };
-    const attachmentsApi = currentClient.api?.attachments;
-    if (!attachmentsApi) return;
-
-    try {
-      const stats = await stat(params.filePath);
-      if (!stats.isFile() || stats.size <= 0) return;
-
-      const bytes = await readFile(params.filePath);
-      const totalSize = bytes.byteLength;
-      const mimeType = guessMimeType(params.filePath);
-      const fileName = basename(params.filePath) || "attachment.bin";
-      const partCount = Math.max(1, Math.ceil(totalSize / ATTACHMENT_UPLOAD_PART_SIZE_BYTES));
-      const pathBase64 = Buffer.from(attachmentBaseUrl, "utf8").toString("base64");
-
-      const started = await attachmentsApi.startMultiPartUpload({
-        fileName,
-        numOfFileParts: partCount,
-        mimeType,
-        projectName: params.projectName,
-        entityType: params.entityType,
-        entityId: params.entityId,
-        path: pathBase64,
-      });
-
-      const urls = started.preSignUrls ?? [];
-      if (urls.length === 0) return;
-
-      if (started.uploadId === LOCAL_ATTACHMENT_UPLOAD_MAGIC_ID) {
-        const localResponse = await fetch(urls[0], {
-          method: "PUT",
-          body: bytes,
-        });
-        if (!localResponse.ok) {
-          throw new Error(`local attachment upload failed status=${localResponse.status}`);
-        }
-        return;
-      }
-
-      if (urls.length < partCount) {
-        throw new Error(
-          `insufficient pre-signed URLs (got ${urls.length}, expected ${partCount})`,
-        );
-      }
-
-      const uploadedParts: Array<{ eTag: string; partNumber: number }> = [];
-      for (let partNumber = 1; partNumber <= partCount; partNumber++) {
-        const start = (partNumber - 1) * ATTACHMENT_UPLOAD_PART_SIZE_BYTES;
-        const end = Math.min(start + ATTACHMENT_UPLOAD_PART_SIZE_BYTES, totalSize);
-        const chunk = bytes.subarray(start, end);
-        const url = urls[partNumber - 1];
-
-        const partResponse = await fetch(url, {
-          method: "PUT",
-          body: chunk,
-        });
-        if (!partResponse.ok) {
-          throw new Error(
-            `attachment part upload failed status=${partResponse.status} part=${partNumber}/${partCount}`,
-          );
-        }
-
-        const eTag = partResponse.headers.get("etag") ??
-          partResponse.headers.get("ETag") ??
-          "";
-        uploadedParts.push({ eTag, partNumber });
-      }
-
-      await attachmentsApi.completeMultiPartUpload({
-        fileName,
-        projectName: params.projectName,
-        entityType: params.entityType,
-        entityId: params.entityId,
-        fileSize: totalSize,
-        mimeType,
-        uploadId: started.uploadId,
-        uploadedFileParts: uploadedParts,
-      });
-    } catch (err) {
-      uploadedAttachmentKeys.delete(existingKey);
-      log.warn(
-        `opik: attachment upload failed (${params.reason}, entity=${params.entityType}:${params.entityId}, path=${params.filePath}): ${formatError(err)}`,
-      );
-    }
-  }
-
-  function scheduleMediaAttachmentUploads(params: {
-    entityType: "trace" | "span";
-    entity: unknown;
-    projectName: string;
-    reason: string;
-    payloads: unknown[];
-  }): void {
-    const entityId = resolveEntityId(params.entity);
-    if (!entityId) return;
-
-    const mediaPaths = new Set<string>();
-    for (const payload of params.payloads) {
-      collectMediaPathsFromUnknown(payload, mediaPaths);
-    }
-    if (mediaPaths.size === 0) return;
-
-    for (const filePath of mediaPaths) {
-      scheduleAttachmentUpload(() =>
-        uploadFileAttachment({
-          entityType: params.entityType,
-          entityId,
-          projectName: params.projectName,
-          filePath,
-          reason: params.reason,
-        })
-      );
-    }
-  }
-
   /** Consolidate output + metadata into a single trace.update() + trace.end(). */
   function finalizeTrace(sessionKey: string): void {
     const active = activeTraces.get(sessionKey);
@@ -740,6 +311,7 @@ export function createOpikService(
         info: ctx.logger.info.bind(ctx.logger),
         warn: ctx.logger.warn.bind(ctx.logger),
       };
+      attachmentUploader.reset();
 
       const runtimeCfg = parseOpikPluginConfig(ctx.config);
       const opikCfg = mergeDefinedConfig(runtimeCfg, pluginConfig);
@@ -777,517 +349,49 @@ export function createOpikService(
         workspaceName,
       });
 
-      // =====================================================================
-      // Hook: llm_input — Create Opik Trace + LLM Span
-      // =====================================================================
-      api.on("llm_input", (event, agentCtx) => {
-        if (!client) return;
-        const sessionKey = agentCtx.sessionKey;
-        if (!sessionKey) return;
-        rememberSessionCorrelation(sessionKey, agentCtx.agentId);
-        const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
-        const agentCtxObj = agentCtx as Record<string, unknown>;
-        const channelId = resolveChannelId(agentCtxObj);
-        const trigger = resolveTrigger(agentCtxObj);
-
-        // Close any pre-existing trace for this session to avoid leaks.
-        const existing = activeTraces.get(sessionKey);
-        if (existing) {
-          closeActiveTrace(existing, `replace active trace sessionKey=${sessionKey}`);
-          activeTraces.delete(sessionKey);
-          forgetSessionCorrelation(sessionKey);
-        }
-
-        let trace: Trace;
-        try {
-          const sanitizedTraceInput = sanitizeValueForOpik({
-            prompt: event.prompt,
-            systemPrompt: event.systemPrompt,
-            imagesCount: event.imagesCount,
-          }) as Record<string, unknown>;
-          trace = client.trace({
-            name: `${event.model} · ${channelId ?? "unknown"}`,
-            threadId: sessionKey,
-            input: sanitizedTraceInput,
-            metadata: {
-              provider: normalizedProvider,
-              model: event.model,
-              sessionId: event.sessionId,
-              runId: event.runId,
-              agentId: agentCtx.agentId,
-              ...(channelId ? { channel: channelId, channelId } : {}),
-              ...(trigger ? { trigger } : {}),
-            },
-            tags: tags.length > 0 ? tags : undefined,
-          });
-        } catch (err) {
-          log.warn(`opik: trace creation failed (sessionKey=${sessionKey}): ${formatError(err)}`);
-          return;
-        }
-
-        let llmSpan: Span | null = null;
-        try {
-          const sanitizedLlmInput = sanitizeValueForOpik({
-            prompt: event.prompt,
-            systemPrompt: event.systemPrompt,
-            historyMessages: event.historyMessages,
-            imagesCount: event.imagesCount,
-          }) as Record<string, unknown>;
-          llmSpan = trace.span({
-            name: event.model,
-            type: "llm",
-            model: event.model,
-            provider: normalizedProvider,
-            input: sanitizedLlmInput,
-          });
-        } catch (err) {
-          log.warn(`opik: llm span creation failed (sessionKey=${sessionKey}): ${formatError(err)}`);
-        }
-
-        const now = Date.now();
-        activeTraces.set(sessionKey, {
-          trace,
-          llmSpan,
-          toolSpans: new Map(),
-          subagentSpans: new Map(),
-          startedAt: now,
-          lastActivityAt: now,
-          costMeta: {},
-          usage: {},
-          model: event.model,
-          provider: normalizedProvider,
-          channelId,
-          trigger,
-        });
-
-        scheduleMediaAttachmentUploads({
-          entityType: "trace",
-          entity: trace,
-          projectName,
-          reason: `llm_input sessionKey=${sessionKey}`,
-          payloads: [event.prompt, event.systemPrompt, event.historyMessages],
-        });
+      registerLlmHooks({
+        api,
+        getClient: () => client,
+        activeTraces,
+        tags,
+        projectName,
+        rememberSessionCorrelation,
+        closeActiveTrace,
+        forgetSessionCorrelation,
+        applyContextMeta,
+        safeSpanUpdate,
+        safeSpanEnd,
+        scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
+        warn: (message) => log.warn(message),
+        formatError,
       });
 
-      // =====================================================================
-      // Hook: llm_output — Update LLM Span with response + usage, then end
-      // =====================================================================
-      api.on("llm_output", (event, agentCtx) => {
-        if (!client) return;
-        const sessionKey = agentCtx.sessionKey;
-        if (!sessionKey) return;
-        rememberSessionCorrelation(sessionKey, agentCtx.agentId);
-        const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
-
-        const active = activeTraces.get(sessionKey);
-        if (!active?.llmSpan) return;
-
-        applyContextMeta(active, agentCtx as Record<string, unknown>);
-        active.lastActivityAt = Date.now();
-
-        const sanitizedLlmOutput = sanitizeValueForOpik({
-          assistantTexts: event.assistantTexts,
-          lastAssistant: event.lastAssistant,
-        }) as { assistantTexts?: unknown; lastAssistant?: unknown };
-        const sanitizedAssistantTexts = Array.isArray(sanitizedLlmOutput.assistantTexts)
-          ? sanitizedLlmOutput.assistantTexts.filter((item): item is string => typeof item === "string")
-          : [];
-
-        // Trace output uses joined text for readability; LLM span retains raw array for debugging.
-        safeSpanUpdate(
-          active.llmSpan,
-          {
-            output: sanitizedLlmOutput as Record<string, unknown>,
-            usage: mapUsageToOpikTokens(event.usage),
-            model: event.model,
-            provider: normalizedProvider,
-          },
-          `llm_output sessionKey=${sessionKey}`,
-        );
-
-        // Store output for deferred trace-level finalization.
-        active.output = {
-          output: sanitizedAssistantTexts.join("\n\n"),
-          lastAssistant: sanitizedLlmOutput.lastAssistant,
-        };
-
-        // Accumulate usage + model on the ActiveTrace for finalization metadata.
-        if (event.usage) {
-          active.usage = { ...active.usage, ...event.usage };
-        }
-        active.model = event.model;
-        active.provider = normalizedProvider;
-
-        safeSpanEnd(active.llmSpan, `llm_output sessionKey=${sessionKey}`);
-        active.llmSpan = null;
+      registerToolHooks({
+        api,
+        getClient: () => client,
+        activeTraces,
+        sessionByAgentId,
+        getLastActiveSessionKey: () => lastActiveSessionKey,
+        rememberSessionCorrelation,
+        warnMissingAfterToolSessionKey,
+        nextSpanSeq: () => ++spanSeq,
+        safeSpanUpdate,
+        safeSpanEnd,
+        scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
+        projectName,
+        warn: (message) => log.warn(message),
+        formatError,
       });
 
-      // =====================================================================
-      // Hook: before_tool_call — Create Tool Span
-      // =====================================================================
-      api.on("before_tool_call", (event, toolCtx) => {
-        if (!client) return;
-        const sessionKey = toolCtx.sessionKey;
-        if (!sessionKey) return;
-        rememberSessionCorrelation(sessionKey, toolCtx.agentId);
-
-        const active = activeTraces.get(sessionKey);
-        if (!active) return;
-
-        active.lastActivityAt = Date.now();
-
-        const eventObj = event as Record<string, unknown>;
-        const ctxObj = toolCtx as Record<string, unknown>;
-        const runId = resolveRunId(eventObj, ctxObj);
-        const toolCallId = resolveToolCallId(eventObj, ctxObj);
-        const sessionId = asNonEmptyString(ctxObj.sessionId);
-
-        const spanMetadata: Record<string, unknown> = {
-          ...(toolCtx.agentId ? { agentId: toolCtx.agentId } : {}),
-          ...(sessionId ? { sessionId } : {}),
-          ...(runId ? { runId } : {}),
-          ...(toolCallId ? { toolCallId } : {}),
-        };
-
-        let toolSpan: Span;
-        try {
-          toolSpan = active.trace.span({
-            name: event.toolName,
-            type: "tool",
-            input: sanitizeValueForOpik(event.params) as any,
-            ...(Object.keys(spanMetadata).length > 0 ? { metadata: spanMetadata } : {}),
-          });
-        } catch (err) {
-          log.warn(
-            `opik: tool span creation failed (sessionKey=${sessionKey}, tool=${event.toolName}): ${formatError(err)}`,
-          );
-          return;
-        }
-
-        const spanKey = toolCallId
-          ? `toolcall:${toolCallId}`
-          : `${event.toolName}:${++spanSeq}`;
-        if (toolCallId) {
-          const existing = active.toolSpans.get(spanKey);
-          if (existing) {
-            safeSpanEnd(
-              existing,
-              `replace duplicate toolCallId sessionKey=${sessionKey} toolCallId=${toolCallId}`,
-            );
-            active.toolSpans.delete(spanKey);
-          }
-        }
-        active.toolSpans.set(spanKey, toolSpan);
-
-        scheduleMediaAttachmentUploads({
-          entityType: "span",
-          entity: toolSpan,
-          projectName,
-          reason: `before_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
-          payloads: [event.params],
-        });
-      });
-
-      // =====================================================================
-      // Hook: after_tool_call — Finalize Tool Span
-      // =====================================================================
-      api.on("after_tool_call", (event, toolCtx) => {
-        if (!client) return;
-        const eventObj = event as Record<string, unknown>;
-        const ctxObj = toolCtx as Record<string, unknown>;
-        const runId = resolveRunId(eventObj, ctxObj);
-        const toolCallId = resolveToolCallId(eventObj, ctxObj);
-        const sessionId = asNonEmptyString(ctxObj.sessionId);
-
-        let sessionKey = toolCtx.sessionKey;
-        let fallbackMode: "agentId" | "single active trace" | "last active session" | undefined;
-        if (!sessionKey) {
-          if (typeof toolCtx.agentId === "string" && toolCtx.agentId.length > 0) {
-            const byAgentId = sessionByAgentId.get(toolCtx.agentId);
-            if (byAgentId && activeTraces.has(byAgentId)) {
-              sessionKey = byAgentId;
-              fallbackMode = "agentId";
-            }
-          }
-          if (!sessionKey && activeTraces.size === 1) {
-            sessionKey = activeTraces.keys().next().value as string | undefined;
-            fallbackMode = "single active trace";
-          } else if (!sessionKey && lastActiveSessionKey && activeTraces.has(lastActiveSessionKey)) {
-            sessionKey = lastActiveSessionKey;
-            fallbackMode = "last active session";
-          }
-          if (sessionKey && fallbackMode) {
-            warnMissingAfterToolSessionKey(fallbackMode);
-          }
-        }
-        if (!sessionKey) return;
-        rememberSessionCorrelation(sessionKey, toolCtx.agentId);
-
-        const active = activeTraces.get(sessionKey);
-        if (!active) return;
-
-        active.lastActivityAt = Date.now();
-
-        // Prefer exact toolCallId correlation when available, then fall back to FIFO by tool name.
-        let matchedKey: string | undefined;
-        let matchedSpan: Span | undefined;
-        if (toolCallId) {
-          const toolCallKey = `toolcall:${toolCallId}`;
-          const toolCallSpan = active.toolSpans.get(toolCallKey);
-          if (toolCallSpan) {
-            matchedKey = toolCallKey;
-            matchedSpan = toolCallSpan;
-          }
-        }
-        if (!matchedSpan) {
-          for (const [key, span] of active.toolSpans) {
-            if (key.startsWith(`${event.toolName}:`)) {
-              matchedKey = key;
-              matchedSpan = span;
-              break;
-            }
-          }
-        }
-        if (!matchedKey || !matchedSpan) return;
-
-        const spanUpdate: Record<string, unknown> = {};
-        if (event.params && typeof event.params === "object" && !Array.isArray(event.params)) {
-          spanUpdate.input = sanitizeValueForOpik(event.params) as Record<string, unknown>;
-        }
-        const spanMetadata: Record<string, unknown> = {
-          ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
-          ...(toolCtx.agentId ? { agentId: toolCtx.agentId } : {}),
-          ...(sessionId ? { sessionId } : {}),
-          ...(runId ? { runId } : {}),
-          ...(toolCallId ? { toolCallId } : {}),
-        };
-        if (Object.keys(spanMetadata).length > 0) {
-          spanUpdate.metadata = spanMetadata;
-        }
-
-        if (event.error) {
-          const sanitizedError = sanitizeStringForOpik(event.error);
-          spanUpdate.output = { error: sanitizedError };
-          spanUpdate.errorInfo = {
-            exceptionType: "ToolError",
-            message: sanitizedError,
-            traceback: sanitizedError,
-          };
-        } else if (event.result !== undefined) {
-          const output =
-            typeof event.result === "object" && event.result !== null
-              ? (event.result as Record<string, unknown>)
-              : { result: event.result };
-          spanUpdate.output = sanitizeValueForOpik(output) as Record<string, unknown>;
-        }
-
-        if (Object.keys(spanUpdate).length > 0) {
-          safeSpanUpdate(
-            matchedSpan,
-            spanUpdate,
-            `after_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
-          );
-        }
-
-        scheduleMediaAttachmentUploads({
-          entityType: "span",
-          entity: matchedSpan,
-          projectName,
-          reason: `after_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
-          payloads: [event.params, event.result, event.error],
-        });
-
-        safeSpanEnd(
-          matchedSpan,
-          `after_tool_call sessionKey=${sessionKey} tool=${event.toolName} key=${matchedKey}`,
-        );
-        active.toolSpans.delete(matchedKey);
-      });
-
-      // =====================================================================
-      // Hook: subagent_spawning — Start subagent span on requester trace
-      // =====================================================================
-      api.on("subagent_spawning", (event, subagentCtx) => {
-        if (!client) return;
-
-        const eventObj = event as Record<string, unknown>;
-        const ctxObj = subagentCtx as Record<string, unknown>;
-
-        const requesterSessionKey = asNonEmptyString(ctxObj.requesterSessionKey);
-        const childSessionKey =
-          asNonEmptyString(eventObj.childSessionKey) ?? asNonEmptyString(ctxObj.childSessionKey);
-        if (!childSessionKey) return;
-
-        const host = resolveSubagentHostTrace({ requesterSessionKey, childSessionKey });
-        if (!host) return;
-
-        rememberSessionCorrelation(host.sessionKey);
-        host.active.lastActivityAt = Date.now();
-
-        const existing = host.active.subagentSpans.get(childSessionKey);
-        if (existing) {
-          safeSpanEnd(existing, `subagent reset childSessionKey=${childSessionKey}`);
-          host.active.subagentSpans.delete(childSessionKey);
-        }
-
-        try {
-          const span = host.active.trace.span({
-            name: `subagent:${asNonEmptyString(eventObj.agentId) ?? "unknown"}`,
-            input: {
-              childSessionKey,
-              agentId: eventObj.agentId,
-              label: eventObj.label,
-              mode: eventObj.mode,
-              requester: eventObj.requester,
-              threadRequested: eventObj.threadRequested,
-            },
-            metadata: {
-              status: "spawning",
-              requesterSessionKey,
-              childSessionKey,
-              runId: asNonEmptyString(ctxObj.runId),
-            },
-          });
-          host.active.subagentSpans.set(childSessionKey, span);
-        } catch (err) {
-          log.warn(
-            `opik: subagent span creation failed (childSessionKey=${childSessionKey}): ${formatError(err)}`,
-          );
-        }
-      });
-
-      // =====================================================================
-      // Hook: subagent_spawned — Update subagent span with run details
-      // =====================================================================
-      api.on("subagent_spawned", (event, subagentCtx) => {
-        if (!client) return;
-
-        const eventObj = event as Record<string, unknown>;
-        const ctxObj = subagentCtx as Record<string, unknown>;
-
-        const requesterSessionKey = asNonEmptyString(ctxObj.requesterSessionKey);
-        const childSessionKey =
-          asNonEmptyString(eventObj.childSessionKey) ?? asNonEmptyString(ctxObj.childSessionKey);
-        if (!childSessionKey) return;
-
-        const host = resolveSubagentHostTrace({ requesterSessionKey, childSessionKey });
-        if (!host) return;
-
-        rememberSessionCorrelation(host.sessionKey);
-        host.active.lastActivityAt = Date.now();
-
-        let span = host.active.subagentSpans.get(childSessionKey);
-        if (!span) {
-          try {
-            span = host.active.trace.span({
-              name: `subagent:${asNonEmptyString(eventObj.agentId) ?? "unknown"}`,
-              input: {
-                childSessionKey,
-                agentId: eventObj.agentId,
-                mode: eventObj.mode,
-              },
-            });
-            host.active.subagentSpans.set(childSessionKey, span);
-          } catch (err) {
-            log.warn(
-              `opik: subagent span creation failed on spawn (childSessionKey=${childSessionKey}): ${formatError(err)}`,
-            );
-            return;
-          }
-        }
-
-        safeSpanUpdate(
-          span,
-          {
-            metadata: {
-              status: "spawned",
-              requesterSessionKey,
-              childSessionKey,
-              runId: asNonEmptyString(eventObj.runId) ?? asNonEmptyString(ctxObj.runId),
-              agentId: eventObj.agentId,
-              mode: eventObj.mode,
-              threadRequested: eventObj.threadRequested,
-            },
-          },
-          `subagent_spawned childSessionKey=${childSessionKey}`,
-        );
-      });
-
-      // =====================================================================
-      // Hook: subagent_ended — Finalize subagent span
-      // =====================================================================
-      api.on("subagent_ended", (event, subagentCtx) => {
-        if (!client) return;
-
-        const eventObj = event as Record<string, unknown>;
-        const ctxObj = subagentCtx as Record<string, unknown>;
-
-        const requesterSessionKey = asNonEmptyString(ctxObj.requesterSessionKey);
-        const childSessionKey = asNonEmptyString(ctxObj.childSessionKey);
-        const targetSessionKey =
-          asNonEmptyString(eventObj.targetSessionKey) ?? childSessionKey;
-
-        const host = resolveSubagentHostTrace({ requesterSessionKey, childSessionKey, targetSessionKey });
-        if (!host) return;
-
-        rememberSessionCorrelation(host.sessionKey);
-        host.active.lastActivityAt = Date.now();
-
-        let span = targetSessionKey ? host.active.subagentSpans.get(targetSessionKey) : undefined;
-        if (!span) {
-          try {
-            span = host.active.trace.span({
-              name: `subagent:${asNonEmptyString(eventObj.targetKind) ?? "unknown"}`,
-              input: {
-                targetSessionKey,
-                targetKind: eventObj.targetKind,
-                reason: eventObj.reason,
-              },
-            });
-          } catch (err) {
-            log.warn(
-              `opik: subagent span creation failed on end (targetSessionKey=${targetSessionKey ?? "unknown"}): ${formatError(err)}`,
-            );
-            return;
-          }
-        }
-
-        const spanUpdate: Record<string, unknown> = {
-          metadata: {
-            status: "ended",
-            targetSessionKey,
-            requesterSessionKey,
-            targetKind: eventObj.targetKind,
-            reason: eventObj.reason,
-            outcome: eventObj.outcome,
-            sendFarewell: eventObj.sendFarewell,
-            endedAt: eventObj.endedAt,
-            accountId: eventObj.accountId,
-            runId: asNonEmptyString(eventObj.runId) ?? asNonEmptyString(ctxObj.runId),
-          },
-        };
-
-        const error = asNonEmptyString(eventObj.error);
-        if (error) {
-          const sanitizedError = sanitizeStringForOpik(error);
-          spanUpdate.output = { error: sanitizedError };
-          spanUpdate.errorInfo = {
-            exceptionType: "SubagentError",
-            message: sanitizedError,
-            traceback: sanitizedError,
-          };
-        }
-
-        safeSpanUpdate(
-          span,
-          spanUpdate,
-          `subagent_ended targetSessionKey=${targetSessionKey ?? "unknown"}`,
-        );
-
-        safeSpanEnd(span, `subagent_ended targetSessionKey=${targetSessionKey ?? "unknown"}`);
-        if (targetSessionKey) {
-          host.active.subagentSpans.delete(targetSessionKey);
-        }
+      registerSubagentHooks({
+        api,
+        getClient: () => client,
+        rememberSessionCorrelation,
+        resolveSubagentHostTrace,
+        safeSpanUpdate,
+        safeSpanEnd,
+        warn: (message) => log.warn(message),
+        formatError,
       });
 
       // =====================================================================
@@ -1326,7 +430,7 @@ export function createOpikService(
           ) as unknown[]) ?? [],
         };
 
-        scheduleMediaAttachmentUploads({
+        attachmentUploader.scheduleMediaAttachmentUploads({
           entityType: "trace",
           entity: active.trace,
           projectName,
@@ -1443,7 +547,7 @@ export function createOpikService(
 
       // Drain any already-scheduled flushes before the final flush.
       await flushQueue.catch(() => undefined);
-      await attachmentQueue.catch(() => undefined);
+      await attachmentUploader.waitForUploads();
 
       if (client) {
         await flushWithRetry("service stop");

@@ -28,6 +28,7 @@ Community plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a>
 `@opik/opik-openclaw` adds native Opik tracing for OpenClaw runs:
 
 - LLM request/response spans
+- sub-agent request/response spans
 - tool call spans with inputs, outputs, and errors
 - run-level finalize metadata
 - usage and cost metadata

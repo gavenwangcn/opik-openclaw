@@ -292,6 +292,75 @@ describe("opik service", () => {
       );
     });
 
+    test("normalizes openai-codex provider to openai on trace/span creation", async () => {
+      const { api, hooks } = createApi();
+      const mockTrace = opikState.createMockTrace();
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(
+        hooks,
+        "llm_input",
+        {
+          model: "gpt-5.3-codex-spark",
+          provider: "openai-codex",
+          prompt: "Hello",
+          historyMessages: [],
+        },
+        agentCtx("session-1"),
+      );
+
+      expect(mockTraceFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            provider: "openai",
+          }),
+        }),
+      );
+      expect(mockTrace.span).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "openai",
+        }),
+      );
+    });
+
+    test("sanitizes media image references in llm_input payloads", async () => {
+      const { api, hooks } = createApi();
+      const mockTrace = opikState.createMockTrace();
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(
+        hooks,
+        "llm_input",
+        {
+          model: "gpt-4",
+          provider: "openai",
+          prompt: "send media:https://example.com/image.jpg",
+          systemPrompt: "use media:./image.jpg for docs examples",
+          imagesCount: 0,
+          historyMessages: [
+            {
+              role: "user",
+              content: "example media:/tmp/screenshot.png",
+            },
+          ],
+        },
+        agentCtx("session-1"),
+      );
+
+      const traceInput = mockTraceFn.mock.calls[0][0].input;
+      expect(traceInput.prompt).toBe("send media:<image-ref>");
+      expect(traceInput.systemPrompt).toBe("use media:<image-ref> for docs examples");
+
+      const llmSpanInput = (mockTrace.span.mock.calls[0][0] as any).input;
+      expect(llmSpanInput.historyMessages[0].content).toBe("example media:<image-ref>");
+    });
+
     test("prefers channelId and records trigger metadata when provided", async () => {
       const { api, hooks } = createApi();
       const mockTrace = opikState.createMockTrace();
@@ -444,6 +513,43 @@ describe("opik service", () => {
         }),
       );
       expect(mockLlmSpan.end).toHaveBeenCalled();
+    });
+
+    test("normalizes openai-codex provider to openai on llm_output updates", async () => {
+      const { api, hooks } = createApi();
+      const mockLlmSpan = opikState.createMockSpan();
+      const mockTrace = opikState.createMockTrace();
+      mockTrace.span.mockReturnValue(mockLlmSpan);
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(
+        hooks,
+        "llm_input",
+        { model: "gpt-5.3-codex-spark", provider: "openai-codex", prompt: "hi" },
+        agentCtx("s1"),
+      );
+
+      invokeHook(
+        hooks,
+        "llm_output",
+        {
+          model: "gpt-5.3-codex-spark",
+          provider: "openai-codex",
+          assistantTexts: ["Hello!"],
+          lastAssistant: "Hello!",
+          usage: { input: 10, output: 20, total: 30 },
+        },
+        agentCtx("s1"),
+      );
+
+      expect(mockLlmSpan.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "openai",
+        }),
+      );
     });
 
     test("does not call trace.update directly (deferred to finalization)", async () => {
@@ -680,6 +786,42 @@ describe("opik service", () => {
       );
 
       expect(mockToolSpan.update).toHaveBeenCalledWith({ output: { data: [1, 2, 3] } });
+      expect(mockToolSpan.end).toHaveBeenCalled();
+    });
+
+    test("sanitizes media image references in tool input and output payloads", async () => {
+      const { api, hooks } = createApi();
+      const mockToolSpan = opikState.createMockSpan();
+      const mockTrace = opikState.createMockTrace();
+      const mockLlmSpan = opikState.createMockSpan();
+      mockTrace.span.mockReturnValueOnce(mockLlmSpan).mockReturnValueOnce(mockToolSpan);
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(hooks, "llm_input", { model: "m", provider: "p", prompt: "" }, agentCtx("s1"));
+      invokeHook(
+        hooks,
+        "before_tool_call",
+        { toolName: "search", params: { path: "media:/tmp/image.png" } },
+        toolCtx("s1"),
+      );
+      invokeHook(
+        hooks,
+        "after_tool_call",
+        {
+          toolName: "search",
+          params: { path: "media:https://example.com/image.jpg" },
+          result: { imageRef: "media:./image.jpeg" },
+        },
+        toolCtx("s1"),
+      );
+
+      expect(mockToolSpan.update).toHaveBeenCalledWith({
+        input: { path: "media:<image-ref>" },
+        output: { imageRef: "media:<image-ref>" },
+      });
       expect(mockToolSpan.end).toHaveBeenCalled();
     });
 
@@ -1252,6 +1394,42 @@ describe("opik service", () => {
       });
     });
 
+    test("normalizes openai-codex provider to openai in final trace metadata", async () => {
+      const { api, hooks } = createApi();
+      const mockLlmSpan = opikState.createMockSpan();
+      const mockTrace = opikState.createMockTrace();
+      mockTrace.span.mockReturnValue(mockLlmSpan);
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(
+        hooks,
+        "llm_input",
+        { model: "gpt-5.3-codex-spark", provider: "openai-codex", prompt: "hi" },
+        agentCtx("s1"),
+      );
+      invokeHook(
+        hooks,
+        "llm_output",
+        {
+          model: "gpt-5.3-codex-spark",
+          provider: "openai-codex",
+          assistantTexts: ["Hello!"],
+          lastAssistant: "Hello!",
+          usage: { input: 100, output: 50 },
+        },
+        agentCtx("s1"),
+      );
+      invokeHook(hooks, "agent_end", { success: true, durationMs: 500 }, agentCtx("s1"));
+
+      await Promise.resolve();
+
+      const metadata = mockTrace.update.mock.calls[0][0].metadata;
+      expect(metadata.provider).toBe("openai");
+    });
+
     test("preserves total-only usage in final trace metadata", async () => {
       const { api, hooks } = createApi();
       const mockLlmSpan = opikState.createMockSpan();
@@ -1626,6 +1804,34 @@ describe("opik service", () => {
       expect(metadata.usageTotal).toBe(340);
       // durationMs from diagnostic stored in costMeta, but overridden by agent_end durationMs
       expect(metadata.durationMs).toBe(2000);
+    });
+
+    test("normalizes diagnostic provider openai-codex to openai", async () => {
+      const { api, hooks } = createApi();
+      const mockTrace = opikState.createMockTrace();
+      mockTraceFn.mockReturnValue(mockTrace);
+
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext() as any);
+
+      invokeHook(
+        hooks,
+        "llm_input",
+        { model: "gpt-5.3-codex-spark", provider: "openai-codex", prompt: "hi" },
+        agentCtx("s1"),
+      );
+
+      diagnosticListeners[0]?.({
+        type: "model.usage",
+        sessionKey: "s1",
+        provider: "openai-codex",
+      });
+
+      invokeHook(hooks, "agent_end", { success: true, durationMs: 10 }, agentCtx("s1"));
+      await Promise.resolve();
+
+      const metadata = mockTrace.update.mock.calls[0][0].metadata;
+      expect(metadata.provider).toBe("openai");
     });
 
     test("ignores non-model.usage events", async () => {

@@ -102,6 +102,25 @@ function asNonNegativeNumber(value: unknown): number | undefined {
   return value;
 }
 
+function normalizeProvider(value: unknown): string | undefined {
+  const raw = asNonEmptyString(value);
+  if (!raw) return undefined;
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return undefined;
+
+  if (
+    normalized === "openai-codex" ||
+    normalized === "openai_codex" ||
+    normalized === "codex" ||
+    (normalized.includes("openai") && normalized.includes("codex"))
+  ) {
+    return "openai";
+  }
+
+  return normalized;
+}
+
 const MEDIA_IMAGE_REFERENCE_RE = /\bmedia:(?:https?:\/\/[^\s"'`]+|\.[/][^\s"'`]+|[/][^\s"'`]+|[^\s"'`]+)\.(?:jpe?g|png|webp|gif)(?=[\s"'`]|$)/gi;
 
 function sanitizeStringForOpik(value: string): string {
@@ -766,6 +785,7 @@ export function createOpikService(
         const sessionKey = agentCtx.sessionKey;
         if (!sessionKey) return;
         rememberSessionCorrelation(sessionKey, agentCtx.agentId);
+        const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
         const agentCtxObj = agentCtx as Record<string, unknown>;
         const channelId = resolveChannelId(agentCtxObj);
         const trigger = resolveTrigger(agentCtxObj);
@@ -790,7 +810,7 @@ export function createOpikService(
             threadId: sessionKey,
             input: sanitizedTraceInput,
             metadata: {
-              provider: event.provider,
+              provider: normalizedProvider,
               model: event.model,
               sessionId: event.sessionId,
               runId: event.runId,
@@ -817,7 +837,7 @@ export function createOpikService(
             name: event.model,
             type: "llm",
             model: event.model,
-            provider: event.provider,
+            provider: normalizedProvider,
             input: sanitizedLlmInput,
           });
         } catch (err) {
@@ -835,7 +855,7 @@ export function createOpikService(
           costMeta: {},
           usage: {},
           model: event.model,
-          provider: event.provider,
+          provider: normalizedProvider,
           channelId,
           trigger,
         });
@@ -857,6 +877,7 @@ export function createOpikService(
         const sessionKey = agentCtx.sessionKey;
         if (!sessionKey) return;
         rememberSessionCorrelation(sessionKey, agentCtx.agentId);
+        const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
 
         const active = activeTraces.get(sessionKey);
         if (!active?.llmSpan) return;
@@ -879,7 +900,7 @@ export function createOpikService(
             output: sanitizedLlmOutput as Record<string, unknown>,
             usage: mapUsageToOpikTokens(event.usage),
             model: event.model,
-            provider: event.provider,
+            provider: normalizedProvider,
           },
           `llm_output sessionKey=${sessionKey}`,
         );
@@ -895,7 +916,7 @@ export function createOpikService(
           active.usage = { ...active.usage, ...event.usage };
         }
         active.model = event.model;
-        active.provider = event.provider;
+        active.provider = normalizedProvider;
 
         safeSpanEnd(active.llmSpan, `llm_output sessionKey=${sessionKey}`);
         active.llmSpan = null;
@@ -1345,7 +1366,7 @@ export function createOpikService(
           active.costMeta.contextUsed = evt.context.used;
         }
         if (evt.model) active.costMeta.model = evt.model;
-        if (evt.provider) active.costMeta.provider = evt.provider;
+        if (evt.provider) active.costMeta.provider = normalizeProvider(evt.provider) ?? evt.provider;
         if (evt.durationMs !== undefined) active.costMeta.durationMs = evt.durationMs;
         if (evt.usage) {
           active.costMeta.usageInput = evt.usage.input;

@@ -35,9 +35,28 @@ Community plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a>
 
 The plugin runs inside the OpenClaw Gateway process. If your gateway is remote, install and configure the plugin on that host.
 
-## First run
+## Install and first run
 
-### 1. Configure the plugin
+Prerequisites:
+
+- OpenClaw `>=2026.3.2`
+- Node.js `>=22.12.0`
+
+### 1. Install the plugin in OpenClaw
+
+```bash
+openclaw plugins install @opik/opik-openclaw
+```
+
+Optional (pin exact version):
+
+```bash
+openclaw plugins install @opik/opik-openclaw@<version> --pin
+```
+
+If the Gateway is already running, restart it after install.
+
+### 2. Configure the plugin
 
 ```bash
 openclaw opik configure
@@ -45,13 +64,13 @@ openclaw opik configure
 
 The setup wizard validates endpoint and credentials, then writes config under `plugins.entries.opik-openclaw`.
 
-### 2. Check effective settings
+### 3. Check effective settings
 
 ```bash
 openclaw opik status
 ```
 
-### 3. Send a test message
+### 4. Send a test message
 
 ```bash
 openclaw gateway run
@@ -118,6 +137,7 @@ image refs in persisted tool transcript messages via `tool_result_persist`.
 
 | Command | Description |
 | --- | --- |
+| `openclaw plugins install @opik/opik-openclaw` | Install plugin package |
 | `openclaw opik configure` | Interactive setup wizard |
 | `openclaw opik status` | Print effective Opik configuration |
 

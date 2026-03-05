@@ -13,13 +13,14 @@
 </h1>
 
 <p align="center">
-Community plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> that exports agent traces to <a href="https://www.comet.com/docs/opik/">Opik</a>.
+Official plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> that exports agent traces to <a href="https://www.comet.com/docs/opik/">Opik</a> for observability, evaluation and guardrails.
 </p>
 
 <div align="center">
 
 [![License](https://img.shields.io/github/license/comet-ml/opik-openclaw)](./LICENSE)
 [![npm version](https://img.shields.io/npm/v/%40opik%2Fopik-openclaw)](https://www.npmjs.com/package/@opik/opik-openclaw)
+
 
 </div>
 

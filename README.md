@@ -26,13 +26,14 @@ Official plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> 
 
 ## What this plugin gives you
 
+[Opik](https://github.com/comet-ml/opik) is a leading open-source LLM and agent observability, tracing, evaluation and optimization platform.
 `@opik/opik-openclaw` adds native Opik tracing for OpenClaw runs:
 
 - LLM request/response spans
-- sub-agent request/response spans
-- tool call spans with inputs, outputs, and errors
-- run-level finalize metadata
-- usage and cost metadata
+- Sub-agent request/response spans
+- Tool call spans with inputs, outputs, and errors
+- Run-level finalize metadata
+- Usage and cost metadata
 
 The plugin runs inside the OpenClaw Gateway process. If your gateway is remote, install and configure the plugin on that host.
 

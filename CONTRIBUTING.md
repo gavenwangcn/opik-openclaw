@@ -15,7 +15,7 @@ Thanks for contributing to `@opik/opik-openclaw`.
 Prerequisites:
 
 - Node.js `>=22.12.0`
-- npm `>=11`
+- npm `>=10`
 
 Clone and bootstrap:
 

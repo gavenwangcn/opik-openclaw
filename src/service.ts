@@ -297,6 +297,65 @@ export function createOpikService(
     flushQueue = flushQueue.then(() => flushWithRetry(reason)).catch(() => undefined);
   }
 
+  function trimOrUndefined(value: string | undefined): string | undefined {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  async function validateProjectTarget(params: {
+    client: unknown;
+    projectName: string;
+    workspaceName: string;
+  }): Promise<void> {
+    const retrieveProject =
+      typeof params.client === "object" &&
+      params.client !== null &&
+      "projects" in params.client &&
+      typeof (params.client as { projects?: { retrieveProject?: unknown } }).projects?.retrieveProject ===
+        "function"
+        ? ((params.client as {
+            projects: {
+              retrieveProject: (
+                request: { name: string },
+                requestOptions?: { workspaceName?: string },
+              ) => Promise<unknown>;
+            };
+          }).projects.retrieveProject)
+        : undefined;
+    if (!retrieveProject) return;
+
+    try {
+      await retrieveProject(
+        { name: params.projectName },
+        { workspaceName: params.workspaceName },
+      );
+    } catch (err) {
+      const statusCode =
+        typeof err === "object" && err !== null && "statusCode" in err
+          ? (err as { statusCode?: unknown }).statusCode
+          : undefined;
+
+      if (statusCode === 404) {
+        log.warn(
+          `opik: configured project "${params.projectName}" was not found in workspace "${params.workspaceName}"; traces may not appear until the project exists or the plugin is reconfigured`,
+        );
+        return;
+      }
+
+      if (statusCode === 403) {
+        log.warn(
+          `opik: could not access project "${params.projectName}" in workspace "${params.workspaceName}" (forbidden); verify the API key and workspace permissions`,
+        );
+        return;
+      }
+
+      log.warn(
+        `opik: could not validate project "${params.projectName}" in workspace "${params.workspaceName}": ${formatError(err)}`,
+      );
+    }
+  }
+
   /** Consolidate output + metadata into a single trace.update() + trace.end(). */
   function finalizeTrace(sessionKey: string): void {
     const active = activeTraces.get(sessionKey);
@@ -386,8 +445,9 @@ export function createOpikService(
 
       const apiKey = opikCfg.apiKey ?? process.env.OPIK_API_KEY;
       const apiUrl = opikCfg.apiUrl ?? process.env.OPIK_URL_OVERRIDE;
-      const projectName = opikCfg.projectName ?? process.env.OPIK_PROJECT_NAME ?? "openclaw";
-      const workspaceName = opikCfg.workspaceName ?? process.env.OPIK_WORKSPACE ?? "default";
+      const projectName = opikCfg.projectName ?? trimOrUndefined(process.env.OPIK_PROJECT_NAME) ?? "openclaw";
+      const workspaceName =
+        opikCfg.workspaceName ?? trimOrUndefined(process.env.OPIK_WORKSPACE) ?? "default";
       const tags = opikCfg.tags ?? ["openclaw"];
       attachmentBaseUrl = (apiUrl ?? DEFAULT_ATTACHMENT_BASE_URL).replace(/\/+$/, "");
 
@@ -409,6 +469,12 @@ export function createOpikService(
       client = new Opik({
         apiKey,
         ...(apiUrl ? { apiUrl } : {}),
+        projectName,
+        workspaceName,
+      });
+
+      await validateProjectTarget({
+        client,
         projectName,
         workspaceName,
       });

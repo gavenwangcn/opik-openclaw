@@ -27,6 +27,7 @@ const opikState = vi.hoisted(() => {
 
 const mockOpikConstructor = vi.hoisted(() => vi.fn());
 const mockTraceFn = vi.hoisted(() => vi.fn());
+const mockRetrieveProject = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockScheduleMediaAttachmentUploads = vi.hoisted(() => vi.fn());
 const mockWaitForUploads = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockResetAttachments = vi.hoisted(() => vi.fn());
@@ -35,6 +36,7 @@ vi.mock("opik", () => ({
   Opik: class {
     trace = mockTraceFn;
     flush = mockFlush;
+    projects = { retrieveProject: mockRetrieveProject };
     constructor(opts?: unknown) {
       mockOpikConstructor(opts);
     }
@@ -143,6 +145,8 @@ describe("opik service", () => {
     opikState.resetCounter();
     diagnosticListeners.length = 0;
     mockTraceFn.mockImplementation((_opts?: unknown) => opikState.createMockTrace());
+    mockRetrieveProject.mockReset();
+    mockRetrieveProject.mockResolvedValue(undefined);
     delete process.env.OPIK_API_KEY;
     delete process.env.OPIK_URL_OVERRIDE;
     delete process.env.OPIK_PROJECT_NAME;
@@ -186,6 +190,29 @@ describe("opik service", () => {
         projectName: "my-project",
         workspaceName: "my-workspace",
       });
+    });
+
+    test("trims project and workspace names from runtime config", async () => {
+      const { api } = createApi();
+      const service = createOpikService(api as any);
+      await service.start(
+        createServiceContext(true, {
+          enabled: true,
+          apiKey: "my-key",
+          projectName: "  my-project  ",
+          workspaceName: "  my-workspace  ",
+        }) as any,
+      );
+
+      expect(mockOpikConstructor).toHaveBeenCalledWith({
+        apiKey: "my-key",
+        projectName: "my-project",
+        workspaceName: "my-workspace",
+      });
+      expect(mockRetrieveProject).toHaveBeenCalledWith(
+        { name: "my-project" },
+        { workspaceName: "my-workspace" },
+      );
     });
 
     test("prefers pluginConfig over runtime service config", async () => {
@@ -234,6 +261,46 @@ describe("opik service", () => {
       });
     });
 
+    test("trims project and workspace names from env vars", async () => {
+      process.env.OPIK_API_KEY = "env-key";
+      process.env.OPIK_PROJECT_NAME = "  env-project  ";
+      process.env.OPIK_WORKSPACE = "  env-workspace  ";
+
+      const { api } = createApi();
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext(true, { enabled: true }) as any);
+
+      expect(mockOpikConstructor).toHaveBeenCalledWith({
+        apiKey: "env-key",
+        projectName: "env-project",
+        workspaceName: "env-workspace",
+      });
+      expect(mockRetrieveProject).toHaveBeenCalledWith(
+        { name: "env-project" },
+        { workspaceName: "env-workspace" },
+      );
+    });
+
+    test("falls back to defaults when trimmed env vars are empty", async () => {
+      process.env.OPIK_API_KEY = "env-key";
+      process.env.OPIK_PROJECT_NAME = "   ";
+      process.env.OPIK_WORKSPACE = "   ";
+
+      const { api } = createApi();
+      const service = createOpikService(api as any);
+      await service.start(createServiceContext(true, { enabled: true }) as any);
+
+      expect(mockOpikConstructor).toHaveBeenCalledWith({
+        apiKey: "env-key",
+        projectName: "openclaw",
+        workspaceName: "default",
+      });
+      expect(mockRetrieveProject).toHaveBeenCalledWith(
+        { name: "openclaw" },
+        { workspaceName: "default" },
+      );
+    });
+
     test("registers lifecycle/tool/subagent hooks + 1 diagnostic listener on start", async () => {
       const { api } = createApi();
       const service = createOpikService(api as any);
@@ -251,6 +318,62 @@ describe("opik service", () => {
       expect(api.on).not.toHaveBeenCalledWith("tool_result_persist", expect.any(Function));
       expect(api.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
       expect(diagnosticListeners).toHaveLength(1);
+    });
+
+    test("validates configured project in the configured workspace on start", async () => {
+      const { api } = createApi();
+      const service = createOpikService(api as any);
+      await service.start(
+        createServiceContext(true, {
+          enabled: true,
+          apiKey: "my-key",
+          projectName: "demo-project",
+          workspaceName: "demo-workspace",
+        }) as any,
+      );
+
+      expect(mockRetrieveProject).toHaveBeenCalledWith(
+        { name: "demo-project" },
+        { workspaceName: "demo-workspace" },
+      );
+    });
+
+    test("warns clearly when the configured project does not exist", async () => {
+      mockRetrieveProject.mockRejectedValueOnce({ statusCode: 404 });
+      const { api } = createApi();
+      const ctx = createServiceContext(true, {
+        enabled: true,
+        apiKey: "my-key",
+        projectName: "missing-project",
+        workspaceName: "demo-workspace",
+      });
+      const service = createOpikService(api as any);
+
+      await service.start(ctx as any);
+
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('configured project "missing-project" was not found'),
+      );
+      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
+    });
+
+    test("warns clearly when the API key cannot access the configured project", async () => {
+      mockRetrieveProject.mockRejectedValueOnce({ statusCode: 403 });
+      const { api } = createApi();
+      const ctx = createServiceContext(true, {
+        enabled: true,
+        apiKey: "my-key",
+        projectName: "private-project",
+        workspaceName: "demo-workspace",
+      });
+      const service = createOpikService(api as any);
+
+      await service.start(ctx as any);
+
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not access project "private-project"'),
+      );
+      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
     });
 
     test("registers tool_result_persist hook only when enabled", async () => {

@@ -13,7 +13,7 @@ type RegisterOpikCliParams = {
 
 /** Opik Cloud host (matches SDK's DEFAULT_HOST_URL). */
 const OPIK_CLOUD_HOST = "https://www.comet.com/";
-const OPIK_CLOUD_SIGNUP_URL = "https://www.comet.com/signup?from=llm";
+const OPIK_CLOUD_SIGNUP_URL = "https://www.comet.com/signup?from=llm&source=openclaw";
 /** Default local Opik URL (matches SDK's DEFAULT_LOCAL_URL). */
 const DEFAULT_LOCAL_URL = "http://localhost:5173/";
 /** Max URL validation retries (matches SDK's MAX_URL_VALIDATION_RETRIES). */

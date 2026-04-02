@@ -270,6 +270,7 @@ export function createOpikService(
       try {
         await currentClient.flush();
         exporterMetrics.flushSuccesses += 1;
+        log.info(`opik: flush ok (${reason})`);
         return;
       } catch (err) {
         exporterMetrics.flushFailures += 1;
@@ -359,7 +360,12 @@ export function createOpikService(
   /** Consolidate output + metadata into a single trace.update() + trace.end(). */
   function finalizeTrace(sessionKey: string): void {
     const active = activeTraces.get(sessionKey);
-    if (!active) return;
+    if (!active) {
+      log.info(`opik: trace finalize skipped (no active trace) sessionKey=${sessionKey}`);
+      return;
+    }
+
+    log.info(`opik: trace finalize start sessionKey=${sessionKey}`);
 
     // End any remaining open child spans (LLM span if llm_output didn't fire).
     endChildSpans(active, `finalize sessionKey=${sessionKey}`);
@@ -425,6 +431,7 @@ export function createOpikService(
     activeTraces.delete(sessionKey);
     forgetSessionCorrelation(sessionKey);
     scheduleFlush(`trace-finalized sessionKey=${sessionKey}`);
+    log.info(`opik: trace finalize done sessionKey=${sessionKey} flush_scheduled=true`);
   }
 
   return {
@@ -493,6 +500,7 @@ export function createOpikService(
         safeSpanEnd,
         scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
         warn: (message) => log.warn(message),
+        info: (message) => log.info(message),
         formatError,
       });
 
@@ -511,6 +519,7 @@ export function createOpikService(
         scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
         projectName,
         warn: (message) => log.warn(message),
+        info: (message) => log.info(message),
         formatError,
       });
 
@@ -525,6 +534,7 @@ export function createOpikService(
         safeSpanUpdate,
         safeSpanEnd,
         warn: (message) => log.warn(message),
+        info: (message) => log.info(message),
         formatError,
       });
 
@@ -553,11 +563,19 @@ export function createOpikService(
       // =====================================================================
       api.on("agent_end", (event, agentCtx) => {
         const sessionKey = agentCtx.sessionKey;
-        if (!sessionKey) return;
+        if (!sessionKey) {
+          log.info("opik: event=agent_end phase=skip reason=no_session_key");
+          return;
+        }
         rememberSessionCorrelation(sessionKey, agentCtx.agentId);
 
         const active = activeTraces.get(sessionKey);
-        if (!active) return;
+        if (!active) {
+          log.info(
+            `opik: event=agent_end phase=skip reason=no_active_trace sessionKey=${sessionKey} (no prior llm_input; nothing to export for this thread)`,
+          );
+          return;
+        }
 
         applyContextMeta(active, agentCtx as Record<string, unknown>);
         // Close any orphaned tool/subagent spans synchronously.
@@ -598,6 +616,9 @@ export function createOpikService(
         // Defer finalization to a microtask so llm_output (which fires on the
         // same synchronous call stack) can store output/usage first.
         const traceRef = active.trace;
+        log.info(
+          `opik: event=agent_end phase=ok sessionKey=${sessionKey} success=${event.success} durationMs=${event.durationMs ?? "n/a"} finalize=queued_microtask`,
+        );
         queueMicrotask(() => {
           const current = activeTraces.get(sessionKey);
           if (current && current.trace === traceRef) finalizeTrace(sessionKey);
@@ -646,6 +667,9 @@ export function createOpikService(
             const now = Date.now();
             for (const [key, active] of activeTraces) {
               if (now - active.lastActivityAt > staleTraceTimeoutMs) {
+                log.info(
+                  `opik: stale_trace_cleanup sessionKey=${key} inactiveMs=${now - active.lastActivityAt} thresholdMs=${staleTraceTimeoutMs}`,
+                );
                 endChildSpans(active, `stale cleanup sessionKey=${key}`);
 
                 // Mark trace as stale before closing.

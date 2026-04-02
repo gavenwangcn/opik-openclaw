@@ -1,0 +1,714 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.4.1",
+    "lastTouchedAt": "2026-04-02T06:39:20.864Z"
+  },
+  "env": {
+    "PADDLEOCR_DOC_PARSING_API_URL": "https://ucccg5c8g4sb8fc7.aistudio-app.com/layout-parsing",
+    "PADDLEOCR_ACCESS_TOKEN": "c75cc14dc82aaac8b072298dd5ee81039a6858ea",
+    "PADDLEOCR_DOC_PARSING_TIMEOUT": "600",
+    "BUSE_AI_BASE_URL": "http://156.239.41.135:3000/openai-codex-oauth/v1",
+    "BUSE_AI_MODEL": "gpt-5",
+    "BUSE_AI_CDP_URL": "http://127.0.0.1:9222",
+    "BUSE_AI_API_KEY": "00009",
+    "BUSE_AI_USE_VISION": "true"
+  },
+  "wizard": {
+    "lastRunAt": "2026-03-26T17:37:06.819Z",
+    "lastRunVersion": "2026.3.13",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "logging": {
+    "level": "info",
+    "consoleLevel": "info",
+    "redactSensitive": "tools"
+  },
+  "browser": {
+    "enabled": true,
+    "defaultProfile": "user",
+    "profiles": {
+      "user": {
+        "cdpUrl": "http://127.0.0.1:9222",
+        "driver": "openclaw",
+        "attachOnly": true,
+        "color": "#00AA00"
+      }
+    }
+  },
+  "acp": {
+    "enabled": true,
+    "dispatch": {
+      "enabled": true
+    },
+    "backend": "acpx",
+    "defaultAgent": "claude",
+    "allowedAgents": [
+      "claude",
+      "codex",
+      "pi",
+      "opencode",
+      "gemini"
+    ],
+    "maxConcurrentSessions": 8
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "codex-provider": {
+        "baseUrl": "http://156.239.41.135:3000/openai-codex-oauth/v1",
+        "apiKey": "00009",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "gpt-5",
+            "name": "gpt-5",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 150000,
+            "api": "openai-completions"
+          }
+        ]
+      },
+      "ag-provider": {
+        "baseUrl": "http://156.239.41.135:3000/gemini-antigravity/v1",
+        "apiKey": "00009",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "gemini-3.1-pro-high",
+            "name": "gemini-3.1-pro-high",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 150000,
+            "api": "openai-completions"
+          },
+          {
+            "id": "gemini-3-flash",
+            "name": "gemini-3-flash",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 150000,
+            "api": "openai-completions"
+          }
+        ]
+      },
+      "claude-proxy": {
+        "baseUrl": "http://156.239.41.135:3000/claude-kiro-oauth/v1",
+        "apiKey": "00009",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "claude-haiku-4.5",
+            "name": "claude-haiku-4.5-local",
+            "reasoning": false,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 150000,
+            "api": "openai-completions"
+          }
+        ]
+      },
+      "ds-provider": {
+        "baseUrl": "http://156.239.41.135:5001/v1",
+        "apiKey": "00009",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "gpt-5.4",
+            "name": "gpt-5.4",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 150000,
+            "api": "openai-completions"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.openclaw/workspace",
+      "memorySearch": {
+        "enabled": true,
+        "provider": "local"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "name": "智能小助手",
+        "workspace": "/root/.openclaw/workspace",
+        "model": {
+          "primary": "ag-provider/gemini-3-flash",
+          "fallbacks": [
+            "ds-provider/gpt-5.4"
+          ]
+        },
+        "subagents": {
+          "allowAgents": [
+            "*"
+          ]
+        }
+      },
+      {
+        "id": "doc-assistant",
+        "name": "文档小助手",
+        "workspace": "/root/.openclaw/workspace-doc",
+        "model": {
+          "primary": "codex-provider/gpt-5",
+          "fallbacks": [
+            "ag-provider/gemini-3-flash"
+          ]
+        },
+        "heartbeat": {
+          "every": "30m",
+          "activeHours": {
+            "start": "09:00",
+            "end": "22:00",
+            "timezone": "Asia/Shanghai"
+          },
+          "ackMaxChars": 300,
+          "lightContext": true
+        },
+        "subagents": {
+          "allowAgents": [
+            "*"
+          ]
+        }
+      },
+      {
+        "id": "code-assistant",
+        "name": "编程小助手",
+        "workspace": "/root/.openclaw/workspace-code",
+        "model": {
+          "primary": "claude-proxy/claude-haiku-4.5",
+          "fallbacks": [
+            "ag-provider/gemini-3-flash"
+          ]
+        }
+      },
+      {
+        "id": "memory-distiller",
+        "name": "反思专用",
+        "workspace": "/root/.openclaw/workspace",
+        "model": {
+          "primary": "ds-provider/gpt-5.4",
+          "fallbacks": []
+        }
+      }
+    ]
+  },
+  "tools": {
+    "profile": "full",
+    "media": {
+      "audio": {
+        "enabled": true,
+        "maxBytes": 20971520,
+        "models": [
+          {
+            "type": "cli",
+            "command": "/usr/local/bin/sherpa-with-convert.sh",
+            "args": [
+              "{{MediaPath}}"
+            ],
+            "timeoutSeconds": 60
+          }
+        ]
+      }
+    },
+    "sessions": {
+      "visibility": "all"
+    },
+    "elevated": {
+      "enabled": true,
+      "allowFrom": {
+        "feishu": [
+          "*"
+        ],
+        "telegram": [
+          "*"
+        ],
+        "qqbot": [
+          "*"
+        ]
+      }
+    },
+    "exec": {
+      "security": "full",
+      "ask": "off",
+      "strictInlineEval": false
+    },
+    "subagents": {
+      "tools": {
+        "alsoAllow": [
+          "gateway",
+          "agents_list",
+          "session_status",
+          "cron",
+          "memory_search",
+          "memory_get",
+          "sessions_send",
+          "sessions_list",
+          "sessions_history",
+          "sessions_spawn"
+        ]
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "feishu",
+        "accountId": "default"
+      }
+    },
+    {
+      "agentId": "doc-assistant",
+      "match": {
+        "channel": "feishu",
+        "accountId": "doc"
+      }
+    },
+    {
+      "agentId": "code-assistant",
+      "match": {
+        "channel": "feishu",
+        "accountId": "code"
+      }
+    }
+  ],
+  "messages": {
+    "tts": {
+      "auto": "inbound",
+      "provider": "microsoft",
+      "providers": {
+        "microsoft": {
+          "enabled": true,
+          "voice": "zh-CN-XiaoxiaoNeural"
+        }
+      }
+    },
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "approvals": {
+    "exec": {
+      "enabled": false
+    },
+    "plugin": {
+      "enabled": false
+    }
+  },
+  "session": {
+    "dmScope": "per-account-channel-peer"
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "session-memory": {
+          "enabled": true
+        },
+        "command-logger": {
+          "enabled": true
+        },
+        "bootstrap-extra-files": {
+          "enabled": true
+        },
+        "boot-md": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "botToken": "8718258116:AAG2A4gKvZnjX2zgU35DtTSdSdd7on1rDpo",
+      "groups": {
+        "*": {
+          "requireMention": true
+        }
+      },
+      "groupAllowFrom": [
+        "*"
+      ],
+      "groupPolicy": "allowlist",
+      "streaming": "partial"
+    },
+    "qqbot": {
+      "enabled": true,
+      "allowFrom": [
+        "*"
+      ],
+      "appId": "1903537278",
+      "clientSecret": "QNLKJJJKLNPSVZdintz6EMVeoy9KWiv8"
+    },
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_a93346637b799bcc",
+      "appSecret": "fHlpJiFGpV3qLy1Nm078GbcKaFwMOQes",
+      "domain": "feishu",
+      "connectionMode": "websocket",
+      "requireMention": true,
+      "groups": {
+        "*": {
+          "enabled": true,
+          "requireMention": true
+        },
+        "oc_f67cb63df0417728f6626557b5b5c6f4": {
+          "enabled": true,
+          "requireMention": true,
+          "allowFrom": [
+            "*"
+          ]
+        }
+      },
+      "streaming": true,
+      "accounts": {
+        "doc": {
+          "appId": "cli_a930b2c64fa41cb3",
+          "appSecret": "DjJpEzMwC1pZohhUIFUqpgVG8dN5QEAY"
+        },
+        "life": {
+          "appId": "cli_a930afa6b2759cc4",
+          "appSecret": "QUWUxxB1TdYmrfJZ4DQO6cfv6jnEcS7N"
+        },
+        "code": {
+          "appId": "cli_a930af9dfa399cb1",
+          "appSecret": "6BpphImwcPqNX7kNwjUb8debLSQKJRKX"
+        },
+        "default": {
+          "dmPolicy": "allowlist",
+          "allowFrom": [
+            "ou_a86d9a3a7ae3a14339f2dede81ce5faf",
+            "ou_aac316a0c3094618919853889c8269e7",
+            "ou_cdddcf2239d17a6305358b7a04bee6d1",
+            "ou_7527e7b6a1a3af02e9e9c287e1415660",
+            "ou_2ba28f245083aa1973fade72aef2efec"
+          ],
+          "groupAllowFrom": [
+            "ou_a86d9a3a7ae3a14339f2dede81ce5faf",
+            "ou_cdddcf2239d17a6305358b7a04bee6d1",
+            "ou_aac316a0c3094618919853889c8269e7",
+            "ou_7527e7b6a1a3af02e9e9c287e1415660",
+            "ou_2ba28f245083aa1973fade72aef2efec"
+          ],
+          "groupPolicy": "allowlist"
+        }
+      },
+      "webhookPath": "/feishu/events",
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "reactionNotifications": "own",
+      "typingIndicator": true,
+      "resolveSenderNames": true
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "controlUi": {
+      "allowedOrigins": [
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://156.239.41.135",
+        "https://156.239.41.135"
+      ]
+    },
+    "auth": {
+      "mode": "token",
+      "token": "a3ad280b6d8abc41b39ebd4387b6c5398df333080c11ede951e466e3b61cdbe3"
+    },
+    "trustedProxies": [
+      "127.0.0.1",
+      "::1"
+    ],
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    }
+  },
+  "plugins": {
+    "allow": [
+      "memory-lancedb-pro",
+      "feishu",
+      "qqbot",
+      "telegram",
+      "acpx",
+      "browser",
+      "lossless-claw",
+      "opik-openclaw"
+    ],
+    "load": {
+      "paths": [
+        "/root/.openclaw/workspace/plugins/memory-lancedb-pro",
+        "/root/.openclaw/work/lossless-claw-enhanced"
+      ]
+    },
+    "slots": {
+      "memory": "memory-lancedb-pro",
+      "contextEngine": "lossless-claw"
+    },
+    "entries": {
+      "browser": {
+        "enabled": true,
+        "config": {}
+      },
+      "telegram": {
+        "enabled": true,
+        "config": {}
+      },
+      "qqbot": {
+        "enabled": true,
+        "config": {}
+      },
+      "feishu": {
+        "enabled": true,
+        "config": {}
+      },
+      "memory-lancedb-pro": {
+        "enabled": true,
+        "config": {
+          "embedding": {
+            "apiKey": "jina_9250fed1d15043cda1630994a953f621IOmNNrTL-M-mk7sF6HS6qSIWvN59",
+            "model": "jina-embeddings-v5-text-small",
+            "baseURL": "https://api.jina.ai/v1",
+            "dimensions": 1024,
+            "taskQuery": "retrieval.query",
+            "taskPassage": "retrieval.passage",
+            "normalized": true,
+            "chunking": true
+          },
+          "dbPath": "/root/.openclaw/memory/lancedb-pro",
+          "autoCapture": true,
+          "autoRecall": true,
+          "retrieval": {
+            "mode": "hybrid",
+            "vectorWeight": 0.7,
+            "bm25Weight": 0.3,
+            "minScore": 0.25,
+            "rerank": "cross-encoder",
+            "rerankApiKey": "jina_9250fed1d15043cda1630994a953f621IOmNNrTL-M-mk7sF6HS6qSIWvN59",
+            "rerankModel": "jina-reranker-v3",
+            "rerankEndpoint": "https://api.jina.ai/v1/rerank",
+            "rerankProvider": "jina",
+            "candidatePoolSize": 20,
+            "recencyHalfLifeDays": 14,
+            "recencyWeight": 0.1,
+            "filterNoise": true,
+            "lengthNormAnchor": 500,
+            "hardMinScore": 0.3,
+            "timeDecayHalfLifeDays": 60,
+            "reinforcementFactor": 0.5,
+            "maxHalfLifeMultiplier": 3
+          },
+          "enableManagementTools": false,
+          "scopes": {
+            "default": "global",
+            "definitions": {
+              "global": {
+                "description": "Shared knowledge across all agents"
+              },
+              "agent:feishu-main": {
+                "description": "Feishu main assistant private memory"
+              },
+              "agent:feishu-doc": {
+                "description": "Feishu document assistant private memory"
+              },
+              "agent:feishu-life": {
+                "description": "Feishu life assistant private memory"
+              },
+              "agent:feishu-code": {
+                "description": "Feishu code assistant private memory"
+              },
+              "agent:qq": {
+                "description": "QQ bot private memory"
+              },
+              "agent:telegram": {
+                "description": "Telegram bot private memory"
+              }
+            },
+            "agentAccess": {
+              "main": [
+                "global",
+                "agent:feishu-main"
+              ],
+              "doc-assistant": [
+                "global",
+                "agent:feishu-doc"
+              ],
+              "code-assistant": [
+                "global",
+                "agent:feishu-code"
+              ],
+              "qqbot": [
+                "global",
+                "agent:qq"
+              ],
+              "telegram": [
+                "global",
+                "agent:telegram"
+              ]
+            }
+          },
+          "sessionMemory": {
+            "enabled": false,
+            "messageCount": 15
+          },
+          "smartExtraction": true,
+          "llm": {
+            "apiKey": "00009",
+            "model": "gpt-5.4",
+            "baseURL": "http://156.239.41.135:5001/v1",
+            "auth": "api-key",
+            "timeoutMs": 60000
+          },
+          "extractMinMessages": 1,
+          "extractMaxChars": 8000,
+          "sessionStrategy": "memoryReflection",
+          "memoryReflection": {
+            "agentId": "memory-distiller",
+            "timeoutMs": 60000,
+            "messageCount": 60,
+            "maxInputChars": 16000,
+            "thinkLevel": "low",
+            "injectMode": "inheritance+derived",
+            "storeToLanceDB": true,
+            "writeLegacyCombined": true,
+            "errorReminderMaxEntries": 3,
+            "dedupeErrorSignals": true
+          },
+          "autoRecallMinLength": 10,
+          "autoRecallMinRepeated": 0,
+          "autoRecallMaxItems": 5,
+          "autoRecallMaxChars": 1200,
+          "autoRecallPerItemMaxChars": 220,
+          "maxRecallPerTurn": 10,
+          "recallMode": "full"
+        }
+      },
+      "lossless-claw": {
+        "enabled": true,
+        "config": {
+          "freshTailCount": 32,
+          "contextThreshold": 0.75,
+          "incrementalMaxDepth": -1,
+          "ignoreSessionPatterns": [
+            "agent:*:cron:**",
+            "agent:*:subagent:**"
+          ],
+          "summaryModel": "ds-provider/gpt-5.4"
+        }
+      },
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "nonInteractivePermissions": "fail"
+        }
+      },
+      "opik-openclaw": {
+        "enabled": true,
+        "config": {
+          "enabled": true,
+          "apiUrl": "https://www.comet.com/opik/api",
+          "workspaceName": "eric-wang",
+          "projectName": "openclaw",
+          "apiKey": "Xiqkbz6sJ3its5qLv8PNziR8h",
+          "tags": [
+            "openclaw"
+          ]
+        }
+      }
+    },
+    "installs": {
+      "lossless-claw": {
+        "source": "path",
+        "sourcePath": "/root/.openclaw/work/lossless-claw-enhanced",
+        "installPath": "/root/.openclaw/work/lossless-claw-enhanced",
+        "version": "0.5.2",
+        "installedAt": "2026-03-30T01:36:01.338Z"
+      },
+      "opik-openclaw": {
+        "source": "clawhub",
+        "spec": "clawhub:@opik/opik-openclaw@0.2.9",
+        "installPath": "/root/.openclaw/extensions/opik-openclaw",
+        "version": "0.2.9",
+        "integrity": "sha256-FMZ7A88ffkJc98foDY9Zpkue6CcW9bg4pqITmP3Oxds=",
+        "resolvedAt": "2026-04-02T06:39:16.442Z",
+        "clawhubUrl": "https://clawhub.ai",
+        "clawhubPackage": "@opik/opik-openclaw",
+        "clawhubFamily": "code-plugin",
+        "clawhubChannel": "community",
+        "installedAt": "2026-04-02T06:39:16.445Z"
+      }
+    }
+  }
+}

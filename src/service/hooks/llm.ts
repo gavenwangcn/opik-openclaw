@@ -30,15 +30,22 @@ type LlmHooksDeps = {
     payloads: unknown[];
   }) => void;
   warn: (message: string) => void;
+  info: (message: string) => void;
   formatError: (err: unknown) => string;
 };
 
 export function registerLlmHooks(deps: LlmHooksDeps): void {
   deps.api.on("llm_input", (event, agentCtx) => {
     const client = deps.getClient();
-    if (!client) return;
+    if (!client) {
+      deps.info("opik: event=llm_input phase=skip reason=no_opik_client");
+      return;
+    }
     const sessionKey = agentCtx.sessionKey;
-    if (!sessionKey) return;
+    if (!sessionKey) {
+      deps.info("opik: event=llm_input phase=skip reason=no_session_key");
+      return;
+    }
     deps.rememberSessionCorrelation(sessionKey, agentCtx.agentId);
     const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
     const agentCtxObj = agentCtx as Record<string, unknown>;
@@ -122,17 +129,32 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
       reason: `llm_input sessionKey=${sessionKey}`,
       payloads: [event.prompt, Array.isArray(event.historyMessages) ? event.historyMessages.at(-1) : undefined],
     });
+
+    deps.info(
+      `opik: event=llm_input phase=ok sessionKey=${sessionKey} model=${event.model} runId=${event.runId ?? "n/a"} sessionId=${event.sessionId ?? "n/a"} trace_registered=true`,
+    );
   });
 
   deps.api.on("llm_output", (event, agentCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=llm_output phase=skip reason=no_opik_client");
+      return;
+    }
     const sessionKey = agentCtx.sessionKey;
-    if (!sessionKey) return;
+    if (!sessionKey) {
+      deps.info("opik: event=llm_output phase=skip reason=no_session_key");
+      return;
+    }
     deps.rememberSessionCorrelation(sessionKey, agentCtx.agentId);
     const normalizedProvider = normalizeProvider(event.provider) ?? event.provider;
 
     const active = deps.activeTraces.get(sessionKey);
-    if (!active?.llmSpan) return;
+    if (!active?.llmSpan) {
+      deps.info(
+        `opik: event=llm_output phase=skip reason=no_active_llm_span sessionKey=${sessionKey} (no matching llm_input trace or span already closed)`,
+      );
+      return;
+    }
 
     deps.applyContextMeta(active, agentCtx as Record<string, unknown>);
     active.lastActivityAt = Date.now();
@@ -169,5 +191,9 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
 
     deps.safeSpanEnd(active.llmSpan, `llm_output sessionKey=${sessionKey}`);
     active.llmSpan = null;
+
+    deps.info(
+      `opik: event=llm_output phase=ok sessionKey=${sessionKey} model=${event.model} provider=${normalizedProvider} llm_span_closed=true`,
+    );
   });
 }

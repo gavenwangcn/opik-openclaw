@@ -27,18 +27,30 @@ type ToolHooksDeps = {
   }) => void;
   projectName: string;
   warn: (message: string) => void;
+  info: (message: string) => void;
   formatError: (err: unknown) => string;
 };
 
 export function registerToolHooks(deps: ToolHooksDeps): void {
   deps.api.on("before_tool_call", (event, toolCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=before_tool_call phase=skip reason=no_opik_client");
+      return;
+    }
     const sessionKey = toolCtx.sessionKey;
-    if (!sessionKey) return;
+    if (!sessionKey) {
+      deps.info("opik: event=before_tool_call phase=skip reason=no_session_key");
+      return;
+    }
     deps.rememberSessionCorrelation(sessionKey, toolCtx.agentId);
 
     const container = deps.resolveSessionSpanContainer(sessionKey);
-    if (!container) return;
+    if (!container) {
+      deps.info(
+        `opik: event=before_tool_call phase=skip reason=no_span_container sessionKey=${sessionKey} tool=${event.toolName}`,
+      );
+      return;
+    }
     const active = container.active;
 
     active.lastActivityAt = Date.now();
@@ -93,10 +105,17 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
       reason: `before_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
       payloads: [event.params],
     });
+
+    deps.info(
+      `opik: event=before_tool_call phase=ok sessionKey=${sessionKey} tool=${event.toolName} spanKey=${spanKey} toolCallId=${toolCallId ?? "n/a"}`,
+    );
   });
 
   deps.api.on("after_tool_call", (event, toolCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=after_tool_call phase=skip reason=no_opik_client");
+      return;
+    }
     const eventObj = event as Record<string, unknown>;
     const ctxObj = toolCtx as Record<string, unknown>;
     const runId = resolveRunId(eventObj, ctxObj);
@@ -127,11 +146,21 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
         deps.warnMissingAfterToolSessionKey(fallbackMode);
       }
     }
-    if (!sessionKey) return;
+    if (!sessionKey) {
+      deps.info(
+        `opik: event=after_tool_call phase=skip reason=no_session_key tool=${event.toolName} (cannot correlate to trace; data may not appear under expected thread)`,
+      );
+      return;
+    }
     deps.rememberSessionCorrelation(sessionKey, toolCtx.agentId);
 
     const container = deps.resolveSessionSpanContainer(sessionKey);
-    if (!container) return;
+    if (!container) {
+      deps.info(
+        `opik: event=after_tool_call phase=skip reason=no_span_container sessionKey=${sessionKey} tool=${event.toolName}`,
+      );
+      return;
+    }
     const active = container.active;
 
     active.lastActivityAt = Date.now();
@@ -155,7 +184,12 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
         }
       }
     }
-    if (!matchedKey || !matchedSpan) return;
+    if (!matchedKey || !matchedSpan) {
+      deps.info(
+        `opik: event=after_tool_call phase=skip reason=no_matching_tool_span sessionKey=${sessionKey} tool=${event.toolName} toolCallId=${toolCallId ?? "n/a"}`,
+      );
+      return;
+    }
 
     const spanUpdate: Record<string, unknown> = {};
     if (event.params && typeof event.params === "object" && !Array.isArray(event.params)) {
@@ -209,5 +243,9 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
       `after_tool_call sessionKey=${sessionKey} tool=${event.toolName} key=${matchedKey}`,
     );
     active.toolSpans.delete(matchedKey);
+
+    deps.info(
+      `opik: event=after_tool_call phase=ok sessionKey=${sessionKey} tool=${event.toolName} matchedKey=${matchedKey}`,
+    );
   });
 }

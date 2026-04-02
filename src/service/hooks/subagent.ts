@@ -31,12 +31,16 @@ type SubagentHooksDeps = {
   safeSpanUpdate: (span: Span, payload: Record<string, unknown>, reason: string) => void;
   safeSpanEnd: (span: Span, reason: string) => void;
   warn: (message: string) => void;
+  info: (message: string) => void;
   formatError: (err: unknown) => string;
 };
 
 export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_spawning", (event, subagentCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=subagent_spawning phase=skip reason=no_opik_client");
+      return;
+    }
 
     const eventObj = event as Record<string, unknown>;
     const ctxObj = subagentCtx as Record<string, unknown>;
@@ -44,7 +48,10 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
     const requesterSessionKey = asNonEmptyString(ctxObj.requesterSessionKey);
     const childSessionKey =
       asNonEmptyString(eventObj.childSessionKey) ?? asNonEmptyString(ctxObj.childSessionKey);
-    if (!childSessionKey) return;
+    if (!childSessionKey) {
+      deps.info("opik: event=subagent_spawning phase=skip reason=no_child_session_key");
+      return;
+    }
 
     const existingHost = deps.getSubagentSpanHost(childSessionKey);
     if (existingHost) {
@@ -54,7 +61,12 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
     }
 
     const host = deps.resolveSubagentSpanContainer({ requesterSessionKey, childSessionKey });
-    if (!host) return;
+    if (!host) {
+      deps.info(
+        `opik: event=subagent_spawning phase=skip reason=no_subagent_container childSessionKey=${childSessionKey} requesterSessionKey=${requesterSessionKey ?? "n/a"}`,
+      );
+      return;
+    }
 
     deps.rememberSessionCorrelation(host.sessionKey);
     host.active.lastActivityAt = Date.now();
@@ -79,6 +91,9 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
       });
       host.active.subagentSpans.set(childSessionKey, span);
       deps.rememberSubagentSpanHost(childSessionKey, host.sessionKey, host.active, span);
+      deps.info(
+        `opik: event=subagent_spawning phase=ok childSessionKey=${childSessionKey} hostSessionKey=${host.sessionKey} agentId=${String(eventObj.agentId ?? "n/a")}`,
+      );
     } catch (err) {
       deps.warn(
         `opik: subagent span creation failed (childSessionKey=${childSessionKey}): ${deps.formatError(err)}`,
@@ -87,7 +102,10 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   });
 
   deps.api.on("subagent_spawned", (event, subagentCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=subagent_spawned phase=skip reason=no_opik_client");
+      return;
+    }
 
     const eventObj = event as Record<string, unknown>;
     const ctxObj = subagentCtx as Record<string, unknown>;
@@ -95,13 +113,21 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
     const requesterSessionKey = asNonEmptyString(ctxObj.requesterSessionKey);
     const childSessionKey =
       asNonEmptyString(eventObj.childSessionKey) ?? asNonEmptyString(ctxObj.childSessionKey);
-    if (!childSessionKey) return;
+    if (!childSessionKey) {
+      deps.info("opik: event=subagent_spawned phase=skip reason=no_child_session_key");
+      return;
+    }
 
     const existingHost = deps.getSubagentSpanHost(childSessionKey);
     const host = existingHost
       ? { sessionKey: existingHost.hostSessionKey, active: existingHost.active, parent: existingHost.span }
       : deps.resolveSubagentSpanContainer({ requesterSessionKey, childSessionKey });
-    if (!host) return;
+    if (!host) {
+      deps.info(
+        `opik: event=subagent_spawned phase=skip reason=no_subagent_container childSessionKey=${childSessionKey}`,
+      );
+      return;
+    }
 
     deps.rememberSessionCorrelation(host.sessionKey);
     host.active.lastActivityAt = Date.now();
@@ -142,10 +168,15 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
       },
       `subagent_spawned childSessionKey=${childSessionKey}`,
     );
+
+    deps.info(`opik: event=subagent_spawned phase=ok childSessionKey=${childSessionKey} hostSessionKey=${host.sessionKey}`);
   });
 
   deps.api.on("subagent_delivery_target", (event, subagentCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=subagent_delivery_target phase=skip reason=no_opik_client");
+      return;
+    }
 
     const eventObj = event as Record<string, unknown>;
     const ctxObj = subagentCtx as Record<string, unknown>;
@@ -154,13 +185,21 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
       asNonEmptyString(eventObj.requesterSessionKey) ?? asNonEmptyString(ctxObj.requesterSessionKey);
     const childSessionKey =
       asNonEmptyString(eventObj.childSessionKey) ?? asNonEmptyString(ctxObj.childSessionKey);
-    if (!childSessionKey) return;
+    if (!childSessionKey) {
+      deps.info("opik: event=subagent_delivery_target phase=skip reason=no_child_session_key");
+      return;
+    }
 
     const existingHost = deps.getSubagentSpanHost(childSessionKey);
     const host = existingHost
       ? { sessionKey: existingHost.hostSessionKey, active: existingHost.active, parent: existingHost.span }
       : deps.resolveSubagentSpanContainer({ requesterSessionKey, childSessionKey });
-    if (!host) return;
+    if (!host) {
+      deps.info(
+        `opik: event=subagent_delivery_target phase=skip reason=no_subagent_container childSessionKey=${childSessionKey}`,
+      );
+      return;
+    }
 
     deps.rememberSessionCorrelation(host.sessionKey);
     host.active.lastActivityAt = Date.now();
@@ -217,10 +256,17 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
       },
       `subagent_delivery_target childSessionKey=${childSessionKey}`,
     );
+
+    deps.info(
+      `opik: event=subagent_delivery_target phase=ok childSessionKey=${childSessionKey} hostSessionKey=${host.sessionKey}`,
+    );
   });
 
   deps.api.on("subagent_ended", (event, subagentCtx) => {
-    if (!deps.getClient()) return;
+    if (!deps.getClient()) {
+      deps.info("opik: event=subagent_ended phase=skip reason=no_opik_client");
+      return;
+    }
 
     const eventObj = event as Record<string, unknown>;
     const ctxObj = subagentCtx as Record<string, unknown>;
@@ -234,7 +280,12 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
     const host = existingHost
       ? { sessionKey: existingHost.hostSessionKey, active: existingHost.active, parent: existingHost.span }
       : deps.resolveSubagentSpanContainer({ requesterSessionKey, childSessionKey, targetSessionKey });
-    if (!host) return;
+    if (!host) {
+      deps.info(
+        `opik: event=subagent_ended phase=skip reason=no_subagent_container targetSessionKey=${targetSessionKey ?? "n/a"} childSessionKey=${childSessionKey ?? "n/a"}`,
+      );
+      return;
+    }
 
     deps.rememberSessionCorrelation(host.sessionKey);
     host.active.lastActivityAt = Date.now();
@@ -299,5 +350,9 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
       host.active.subagentSpans.delete(targetSessionKey);
       deps.forgetSubagentSpanHost(targetSessionKey);
     }
+
+    deps.info(
+      `opik: event=subagent_ended phase=ok hostSessionKey=${host.sessionKey} targetSessionKey=${targetSessionKey ?? "n/a"} outcome=${String(eventObj.outcome ?? "n/a")}`,
+    );
   });
 }

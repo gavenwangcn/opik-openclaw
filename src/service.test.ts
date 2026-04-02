@@ -107,14 +107,20 @@ type OpikCfg = {
   staleTraceCleanupEnabled?: boolean;
   flushRetryCount?: number;
   flushRetryBaseDelayMs?: number;
+  /** Tests keep api.on as vi.fn; production defaults instrument on. */
+  debugInstrumentPluginApi?: boolean;
 };
 
 function createServiceContext(
   opikEnabled = true,
   opikCfg: OpikCfg = { enabled: true, apiKey: "test-key" },
 ) {
+  const cfg: OpikCfg = {
+    ...opikCfg,
+    debugInstrumentPluginApi: opikCfg.debugInstrumentPluginApi ?? false,
+  };
   return {
-    config: opikEnabled ? opikCfg : { ...opikCfg, enabled: false },
+    config: opikEnabled ? cfg : { ...cfg, enabled: false },
     logger: createLogger(),
     stateDir: "/tmp/opik-test",
   };
@@ -151,6 +157,7 @@ describe("opik service", () => {
     delete process.env.OPIK_URL_OVERRIDE;
     delete process.env.OPIK_PROJECT_NAME;
     delete process.env.OPIK_WORKSPACE;
+    delete process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API;
   });
 
   afterEach(() => {

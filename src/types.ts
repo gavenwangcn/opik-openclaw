@@ -13,6 +13,11 @@ export type OpikPluginConfig = {
   staleTraceCleanupEnabled?: boolean;
   flushRetryCount?: number;
   flushRetryBaseDelayMs?: number;
+  /**
+   * Wraps `plugin-sdk` `api.on` to log `opik: [instrument] FIRED` when the host invokes
+   * llm/agent/tool/subagent handlers. **Default: enabled.** Set to `false` to disable.
+   */
+  debugInstrumentPluginApi?: boolean;
 };
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -65,6 +70,8 @@ export function parseOpikPluginConfig(raw: unknown): OpikPluginConfig {
       typeof cfg.staleTraceCleanupEnabled === "boolean" ? cfg.staleTraceCleanupEnabled : undefined,
     flushRetryCount: asOptionalNumber(cfg.flushRetryCount),
     flushRetryBaseDelayMs: asOptionalNumber(cfg.flushRetryBaseDelayMs),
+    debugInstrumentPluginApi:
+      typeof cfg.debugInstrumentPluginApi === "boolean" ? cfg.debugInstrumentPluginApi : undefined,
   };
 }
 

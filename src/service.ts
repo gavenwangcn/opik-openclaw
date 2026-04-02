@@ -36,6 +36,7 @@ import {
   sleep,
 } from "./service/helpers.js";
 import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-sanitizer.js";
+import { instrumentOpenClawPluginApi } from "./service/instrument-plugin-api.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
 
 type ServiceLogger = {
@@ -485,6 +486,18 @@ export function createOpikService(
         projectName,
         workspaceName,
       });
+
+      const instrumentDisabledByEnv =
+        process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "0" ||
+        process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "false";
+      const instrumentEnabled =
+        opikCfg.debugInstrumentPluginApi !== false && !instrumentDisabledByEnv;
+      if (instrumentEnabled) {
+        instrumentOpenClawPluginApi(api, log);
+        log.info(
+          "opik: [instrument] on (default) — register/FIRED for llm_*, agent_end, tool_*, subagent_*; disable with debugInstrumentPluginApi:false or OPIK_DEBUG_INSTRUMENT_PLUGIN_API=0",
+        );
+      }
 
       registerLlmHooks({
         api,

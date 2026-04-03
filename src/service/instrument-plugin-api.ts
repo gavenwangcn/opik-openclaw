@@ -1,17 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-
-/** Events relevant to Opik tracing — log register + FIRED when instrumentation is on. */
-const INSTRUMENT_EVENTS = new Set([
-  "llm_input",
-  "llm_output",
-  "agent_end",
-  "before_tool_call",
-  "after_tool_call",
-  "subagent_spawning",
-  "subagent_spawned",
-  "subagent_delivery_target",
-  "subagent_ended",
-]);
+import { OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET } from "./opik-instrumented-hook-names.js";
 
 /**
  * Wraps `api.on` so each registered handler logs when OpenClaw actually invokes it.
@@ -23,11 +11,11 @@ export function instrumentOpenClawPluginApi(
 ): void {
   const originalOn = api.on.bind(api);
   api.on = ((event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-    if (INSTRUMENT_EVENTS.has(event)) {
+    if (OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET.has(event)) {
       log.info(`opik: [instrument] register listener event=${event}`);
     }
     originalOn(event, (ev: unknown, ctx: unknown) => {
-      if (INSTRUMENT_EVENTS.has(event)) {
+      if (OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET.has(event)) {
         const ctxObj = ctx && typeof ctx === "object" ? (ctx as Record<string, unknown>) : undefined;
         const sessionKey =
           ctxObj && typeof ctxObj.sessionKey === "string" ? ctxObj.sessionKey : "n/a";

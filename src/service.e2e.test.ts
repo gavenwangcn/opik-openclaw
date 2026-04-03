@@ -191,6 +191,7 @@ function createApi() {
       hooks[hookName] = handler;
     },
     registerService: () => undefined,
+    pluginConfig: { debugInstrumentPluginApi: false },
   };
 
   return { api, hooks };

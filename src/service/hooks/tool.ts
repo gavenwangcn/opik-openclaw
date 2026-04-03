@@ -25,7 +25,7 @@ type ToolHooksDeps = {
     reason: string;
     payloads: unknown[];
   }) => void;
-  projectName: string;
+  getProjectName: () => string;
   warn: (message: string) => void;
   info: (message: string) => void;
   formatError: (err: unknown) => string;
@@ -101,7 +101,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
     deps.scheduleMediaAttachmentUploads({
       entityType: "span",
       entity: toolSpan,
-      projectName: deps.projectName,
+      projectName: deps.getProjectName(),
       reason: `before_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
       payloads: [event.params],
     });
@@ -233,7 +233,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
     deps.scheduleMediaAttachmentUploads({
       entityType: "span",
       entity: matchedSpan,
-      projectName: deps.projectName,
+      projectName: deps.getProjectName(),
       reason: `after_tool_call sessionKey=${sessionKey} tool=${event.toolName}`,
       payloads: [event.params, event.result, event.error],
     });

@@ -15,6 +15,8 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     const pluginConfig = parseOpikPluginConfig(api.pluginConfig);
+    // Typed hooks register synchronously inside createOpikService so they are on the
+    // global registry when the gateway initializes the hook runner (standard plugin pattern).
     api.registerService(createOpikService(api, pluginConfig));
     api.registerCli(
       ({ program }) =>

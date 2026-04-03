@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { Opik, Span, Trace } from "opik";
 import type { ActiveTrace } from "../../types.js";
 import { asNonEmptyString } from "../helpers.js";
+import { logOpikHookEnter } from "../hook-enter-log.js";
 import { sanitizeStringForOpik } from "../payload-sanitizer.js";
 
 function asStringOrNumber(value: unknown): string | number | undefined {
@@ -37,6 +38,7 @@ type SubagentHooksDeps = {
 
 export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_spawning", (event, subagentCtx) => {
+    logOpikHookEnter(deps.info, "subagent_spawning");
     if (!deps.getClient()) {
       deps.info("opik: event=subagent_spawning phase=skip reason=no_opik_client");
       return;
@@ -102,6 +104,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   });
 
   deps.api.on("subagent_spawned", (event, subagentCtx) => {
+    logOpikHookEnter(deps.info, "subagent_spawned");
     if (!deps.getClient()) {
       deps.info("opik: event=subagent_spawned phase=skip reason=no_opik_client");
       return;
@@ -173,6 +176,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   });
 
   deps.api.on("subagent_delivery_target", (event, subagentCtx) => {
+    logOpikHookEnter(deps.info, "subagent_delivery_target");
     if (!deps.getClient()) {
       deps.info("opik: event=subagent_delivery_target phase=skip reason=no_opik_client");
       return;
@@ -263,6 +267,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   });
 
   deps.api.on("subagent_ended", (event, subagentCtx) => {
+    logOpikHookEnter(deps.info, "subagent_ended");
     if (!deps.getClient()) {
       deps.info("opik: event=subagent_ended phase=skip reason=no_opik_client");
       return;

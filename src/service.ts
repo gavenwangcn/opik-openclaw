@@ -36,6 +36,7 @@ import {
   sleep,
 } from "./service/helpers.js";
 import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-sanitizer.js";
+import { logOpikHookEnter } from "./service/hook-enter-log.js";
 import { instrumentOpenClawPluginApi } from "./service/instrument-plugin-api.js";
 import { OPIK_INSTRUMENTED_HOOK_REGISTRATION_SITE } from "./service/opik-instrumented-hook-registration-coverage.js";
 import {
@@ -525,6 +526,7 @@ export function createOpikService(
   });
 
   api.on("tool_result_persist", (event) => {
+    logOpikHookEnter(log.info, "tool_result_persist");
     if (!toolResultPersistSanitizeEnabled) {
       return;
     }
@@ -543,6 +545,7 @@ export function createOpikService(
   });
 
   api.on("agent_end", (event, agentCtx) => {
+    logOpikHookEnter(log.info, "agent_end");
     const sessionKey = agentCtx.sessionKey;
     if (!sessionKey) {
       log.info("opik: event=agent_end phase=skip reason=no_session_key");

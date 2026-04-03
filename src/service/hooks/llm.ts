@@ -8,6 +8,7 @@ import {
   resolveChannelId,
   resolveTrigger,
 } from "../helpers.js";
+import { logOpikHookEnter } from "../hook-enter-log.js";
 import { sanitizeValueForOpik } from "../payload-sanitizer.js";
 
 type LlmHooksDeps = {
@@ -37,6 +38,7 @@ type LlmHooksDeps = {
 
 export function registerLlmHooks(deps: LlmHooksDeps): void {
   deps.api.on("llm_input", (event, agentCtx) => {
+    logOpikHookEnter(deps.info, "llm_input");
     const client = deps.getClient();
     if (!client) {
       deps.info("opik: event=llm_input phase=skip reason=no_opik_client");
@@ -138,6 +140,7 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
   });
 
   deps.api.on("llm_output", (event, agentCtx) => {
+    logOpikHookEnter(deps.info, "llm_output");
     if (!deps.getClient()) {
       deps.info("opik: event=llm_output phase=skip reason=no_opik_client");
       return;

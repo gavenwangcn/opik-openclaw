@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { Opik, Span, Trace } from "opik";
 import type { ActiveTrace } from "../../types.js";
 import { asNonEmptyString, resolveRunId, resolveToolCallId } from "../helpers.js";
+import { logOpikHookEnter } from "../hook-enter-log.js";
 import { sanitizeStringForOpik, sanitizeValueForOpik } from "../payload-sanitizer.js";
 
 type ToolHooksDeps = {
@@ -33,6 +34,7 @@ type ToolHooksDeps = {
 
 export function registerToolHooks(deps: ToolHooksDeps): void {
   deps.api.on("before_tool_call", (event, toolCtx) => {
+    logOpikHookEnter(deps.info, "before_tool_call");
     if (!deps.getClient()) {
       deps.info("opik: event=before_tool_call phase=skip reason=no_opik_client");
       return;
@@ -112,6 +114,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
   });
 
   deps.api.on("after_tool_call", (event, toolCtx) => {
+    logOpikHookEnter(deps.info, "after_tool_call");
     if (!deps.getClient()) {
       deps.info("opik: event=after_tool_call phase=skip reason=no_opik_client");
       return;

@@ -41,6 +41,7 @@
     "src/service/payload-sanitizer.ts",
     "src/service/media.ts",
     "src/service/attachment-uploader.ts",
+    "src/service/hook-enter-log.ts",
     "src/service/instrument-plugin-api.ts",
     "src/service/hooks/llm.ts",
     "src/service/hooks/tool.ts",

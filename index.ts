@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { definePluginEntry, emptyPluginConfigSchema } from "openclaw/plugin-sdk/plugin-entry";
 import { disableLogger } from "opik";
 import { registerOpikCli } from "./src/configure.js";
 import { createOpikService } from "./src/service.js";
@@ -8,15 +8,14 @@ import { parseOpikPluginConfig } from "./src/types.js";
 // Suppress Opik SDK tslog console output
 disableLogger();
 
-const plugin = {
+export default definePluginEntry({
   id: "opik-openclaw",
   name: "Opik",
   description: "Export LLM traces and spans to Opik for observability",
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     const pluginConfig = parseOpikPluginConfig(api.pluginConfig);
-    // Typed hooks register synchronously inside createOpikService so they are on the
-    // global registry when the gateway initializes the hook runner (standard plugin pattern).
+    // Service construction registers typed hooks synchronously via `api.on` (see `register-opik-hooks.ts`).
     api.registerService(createOpikService(api, pluginConfig));
     api.registerCli(
       ({ program }) =>
@@ -28,6 +27,4 @@ const plugin = {
       { commands: ["opik"] },
     );
   },
-};
-
-export default plugin;
+});

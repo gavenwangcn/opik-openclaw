@@ -6,9 +6,7 @@ import type {
 import { onDiagnosticEvent } from "openclaw/plugin-sdk";
 import { Opik, type Span, type Trace } from "opik";
 import { createAttachmentUploader } from "./service/attachment-uploader.js";
-import { registerLlmHooks } from "./service/hooks/llm.js";
-import { registerSubagentHooks } from "./service/hooks/subagent.js";
-import { registerToolHooks } from "./service/hooks/tool.js";
+import { registerOpikExporterHooks } from "./register-opik-hooks.js";
 import {
   ATTACHMENT_UPLOADS_ENABLED,
   DEFAULT_ATTACHMENT_BASE_URL,
@@ -35,14 +33,7 @@ import {
   resolveTrigger,
   sleep,
 } from "./service/helpers.js";
-import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-sanitizer.js";
-import { logOpikHookEnter } from "./service/hook-enter-log.js";
-import { instrumentOpenClawPluginApi } from "./service/instrument-plugin-api.js";
-import { OPIK_INSTRUMENTED_HOOK_REGISTRATION_SITE } from "./service/opik-instrumented-hook-registration-coverage.js";
-import {
-  OPIK_INSTRUMENTED_TYPED_HOOK_NAMES,
-  OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET,
-} from "./service/opik-instrumented-hook-names.js";
+import { OPIK_INSTRUMENTED_TYPED_HOOK_NAMES } from "./service/opik-instrumented-hook-names.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
 
 type ServiceLogger = {
@@ -81,7 +72,7 @@ export function createOpikService(
   let hookProjectName = "openclaw";
   let hookTags: string[] = ["openclaw"];
   let toolResultPersistSanitizeEnabled = false;
-  let instrumentPluginApiApplied = false;
+  const hookInstallFlags = { instrumentPluginApiApplied: false };
 
   let flushQueue: Promise<void> = Promise.resolve();
   const attachmentUploader = createAttachmentUploader({
@@ -224,7 +215,7 @@ export function createOpikService(
     endChildSpans(active, reason);
     forgetSubagentSpanHostsByActive(active);
 
-    // Clear deferred finalization state so stale microtasks no-op.
+    // Clear deferred finalization state so stale finalize callbacks no-op.
     active.agentEnd = undefined;
     active.output = undefined;
 
@@ -378,7 +369,9 @@ export function createOpikService(
       return;
     }
 
-    log.info(`opik: trace finalize start sessionKey=${sessionKey}`);
+    log.info(
+      `opik: trace finalize start sessionKey=${sessionKey} llmSpanOpen=${Boolean(active.llmSpan)} toolSpansOpen=${active.toolSpans.size} subagentSpansOpen=${active.subagentSpans.size}`,
+    );
 
     // End any remaining open child spans (LLM span if llm_output didn't fire).
     endChildSpans(active, `finalize sessionKey=${sessionKey}`);
@@ -447,172 +440,62 @@ export function createOpikService(
     log.info(`opik: trace finalize done sessionKey=${sessionKey} flush_scheduled=true`);
   }
 
-  // ---------------------------------------------------------------------------
-  // Typed hooks: register during createOpikService (plugin register() phase) so
-  // OpenClaw's global hook runner sees them before channels handle traffic.
-  // ---------------------------------------------------------------------------
-  void OPIK_INSTRUMENTED_HOOK_REGISTRATION_SITE;
+  const pendingFinalizeHandles = new Set<ReturnType<typeof setTimeout>>();
 
-  const opikInstrumentedHookNamesSeen = new Set<string>();
-  {
-    const underlyingOn = api.on.bind(api);
-    api.on = ((hookName, handler, opts) => {
-      if (OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET.has(String(hookName))) {
-        opikInstrumentedHookNamesSeen.add(String(hookName));
+  function clearPendingFinalizeHandles(): void {
+    for (const h of pendingFinalizeHandles) {
+      clearTimeout(h);
+    }
+    pendingFinalizeHandles.clear();
+  }
+
+  /**
+   * Defer trace finalize to a macrotask so host-scheduled `llm_output` hooks (which may run
+   * after `agent_end` in the same event-loop turn) can update the LLM span before we end the trace.
+   */
+  function scheduleTraceFinalize(sessionKey: string, traceRef: Trace): void {
+    const handle = setTimeout(() => {
+      pendingFinalizeHandles.delete(handle);
+      const current = activeTraces.get(sessionKey);
+      if (current && current.trace === traceRef) {
+        finalizeTrace(sessionKey);
+      } else {
+        log.info(
+          `opik: finalize deferred callback skipped sessionKey=${sessionKey} reason=${!current ? "no_active_trace" : "trace_ref_mismatch"}`,
+        );
       }
-      underlyingOn(hookName, handler as never, opts);
-    }) as OpenClawPluginApi["on"];
+    }, 0);
+    pendingFinalizeHandles.add(handle);
   }
 
-  const registerTimeOpikConfig = mergeDefinedConfig(parseOpikPluginConfig(api.pluginConfig), pluginConfig);
-  const instrumentDisabledByEnv =
-    process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "0" ||
-    process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "false";
-  if (registerTimeOpikConfig.debugInstrumentPluginApi !== false && !instrumentDisabledByEnv) {
-    instrumentOpenClawPluginApi(api, { info: (message: string) => log.info(message) });
-    instrumentPluginApiApplied = true;
-  }
-
-  registerLlmHooks({
+  registerOpikExporterHooks({
     api,
-    getClient: () => client,
-    activeTraces,
-    getProjectName: () => hookProjectName,
-    getTags: () => hookTags,
-    rememberSessionCorrelation,
-    closeActiveTrace,
-    forgetSessionCorrelation,
-    applyContextMeta,
-    safeSpanUpdate,
-    safeSpanEnd,
-    scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
-    warn: (message) => log.warn(message),
-    info: (message) => log.info(message),
-    formatError,
-  });
-
-  registerToolHooks({
-    api,
+    pluginConfig,
+    log,
+    hookInstallFlags,
     getClient: () => client,
     activeTraces,
     sessionByAgentId,
     getLastActiveSessionKey: () => lastActiveSessionKey,
+    getHookProjectName: () => hookProjectName,
+    getHookTags: () => hookTags,
+    getToolResultPersistSanitizeEnabled: () => toolResultPersistSanitizeEnabled,
     rememberSessionCorrelation,
+    forgetSessionCorrelation,
+    closeActiveTrace,
+    applyContextMeta,
     resolveSessionSpanContainer,
+    resolveSubagentSpanContainer,
+    getSubagentSpanHost,
+    rememberSubagentSpanHost,
+    forgetSubagentSpanHost,
     warnMissingAfterToolSessionKey,
     nextSpanSeq: () => ++spanSeq,
     safeSpanUpdate,
     safeSpanEnd,
     scheduleMediaAttachmentUploads: attachmentUploader.scheduleMediaAttachmentUploads,
-    getProjectName: () => hookProjectName,
-    warn: (message) => log.warn(message),
-    info: (message) => log.info(message),
-    formatError,
+    scheduleTraceFinalize,
   });
-
-  registerSubagentHooks({
-    api,
-    getClient: () => client,
-    rememberSessionCorrelation,
-    resolveSubagentSpanContainer,
-    getSubagentSpanHost,
-    rememberSubagentSpanHost,
-    forgetSubagentSpanHost,
-    safeSpanUpdate,
-    safeSpanEnd,
-    warn: (message) => log.warn(message),
-    info: (message) => log.info(message),
-    formatError,
-  });
-
-  api.on("tool_result_persist", (event) => {
-    logOpikHookEnter(log.info, "tool_result_persist");
-    if (!toolResultPersistSanitizeEnabled) {
-      return;
-    }
-    try {
-      const eventObj = event as Record<string, unknown>;
-      const message = eventObj.message;
-      if (!message || typeof message !== "object") return;
-
-      const sanitizedMessage = sanitizeValueForOpik(message);
-      if (sanitizedMessage !== message) {
-        return { message: sanitizedMessage };
-      }
-    } catch (err) {
-      log.warn(`opik: tool_result_persist failed: ${formatError(err)}`);
-    }
-  });
-
-  api.on("agent_end", (event, agentCtx) => {
-    logOpikHookEnter(log.info, "agent_end");
-    const sessionKey = agentCtx.sessionKey;
-    if (!sessionKey) {
-      log.info("opik: event=agent_end phase=skip reason=no_session_key");
-      return;
-    }
-    rememberSessionCorrelation(sessionKey, agentCtx.agentId);
-
-    const active = activeTraces.get(sessionKey);
-    if (!active) {
-      log.info(
-        `opik: event=agent_end phase=skip reason=no_active_trace sessionKey=${sessionKey} (no prior llm_input; nothing to export for this thread)`,
-      );
-      return;
-    }
-
-    applyContextMeta(active, agentCtx as Record<string, unknown>);
-    for (const [toolKey, toolSpan] of active.toolSpans) {
-      safeSpanEnd(toolSpan, `agent_end orphan tool sessionKey=${sessionKey} toolKey=${toolKey}`);
-    }
-    active.toolSpans.clear();
-
-    for (const [subagentKey, subagentSpan] of active.subagentSpans) {
-      safeSpanEnd(
-        subagentSpan,
-        `agent_end orphan subagent sessionKey=${sessionKey} subagentKey=${subagentKey}`,
-      );
-    }
-    active.subagentSpans.clear();
-
-    active.agentEnd = {
-      success: event.success,
-      error: typeof event.error === "string" ? sanitizeStringForOpik(event.error) : event.error,
-      durationMs: event.durationMs,
-      messages: (sanitizeValueForOpik(
-        ((event as Record<string, unknown>).messages as unknown[]) ?? [],
-      ) as unknown[]) ?? [],
-    };
-
-    attachmentUploader.scheduleMediaAttachmentUploads({
-      entityType: "trace",
-      entity: active.trace,
-      projectName: hookProjectName,
-      reason: `agent_end sessionKey=${sessionKey}`,
-      payloads: [
-        event.error,
-        ((event as Record<string, unknown>).messages as unknown[] | undefined)?.at(-1),
-      ],
-    });
-
-    const traceRef = active.trace;
-    log.info(
-      `opik: event=agent_end phase=ok sessionKey=${sessionKey} success=${event.success} durationMs=${event.durationMs ?? "n/a"} finalize=queued_microtask`,
-    );
-    queueMicrotask(() => {
-      const current = activeTraces.get(sessionKey);
-      if (current && current.trace === traceRef) finalizeTrace(sessionKey);
-    });
-  });
-
-  for (const name of OPIK_INSTRUMENTED_TYPED_HOOK_NAMES) {
-    if (!opikInstrumentedHookNamesSeen.has(name)) {
-      throw new Error(
-        `opik-openclaw: missing api.on registration for instrumented hook "${name}". ` +
-          `Each name in OPIK_INSTRUMENTED_TYPED_HOOK_NAMES must be registered in createOpikService.`,
-      );
-    }
-  }
 
   return {
     id: OPIK_PLUGIN_ID,
@@ -669,7 +552,7 @@ export function createOpikService(
         workspaceName,
       });
 
-      if (instrumentPluginApiApplied) {
+      if (hookInstallFlags.instrumentPluginApiApplied) {
         log.info(
           "opik: [instrument] on (default) — register/FIRED for llm_*, agent_end, tool_*, subagent_*; disable with debugInstrumentPluginApi:false or OPIK_DEBUG_INSTRUMENT_PLUGIN_API=0",
         );
@@ -754,6 +637,7 @@ export function createOpikService(
       // Wire cleanup
       // =====================================================================
       cleanup = () => {
+        clearPendingFinalizeHandles();
         unsubscribeDiagnostics();
         if (sweepInterval) {
           clearInterval(sweepInterval);
@@ -761,11 +645,15 @@ export function createOpikService(
       };
 
       log.info(
+        `opik: typed hook names (instrumented list): ${OPIK_INSTRUMENTED_TYPED_HOOK_NAMES.join(", ")}; also tool_result_persist, agent_end`,
+      );
+      log.info(
         `opik: exporting traces to project "${projectName}" (staleCleanup=${staleTraceCleanupEnabled ? "on" : "off"}, staleTimeoutMs=${staleTraceTimeoutMs}, staleSweepMs=${staleSweepIntervalMs}, flushRetryCount=${flushRetryCount}, flushRetryBaseDelayMs=${flushRetryBaseDelayMs})`,
       );
     },
 
     async stop() {
+      clearPendingFinalizeHandles();
       cleanup?.();
       cleanup = null;
 

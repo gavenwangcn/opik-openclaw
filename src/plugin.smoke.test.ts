@@ -6,7 +6,8 @@ vi.mock("opik", () => ({
   disableLogger: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk", () => ({
+vi.mock("openclaw/plugin-sdk/plugin-entry", () => ({
+  definePluginEntry: <T extends Record<string, unknown>>(def: T) => def,
   emptyPluginConfigSchema: () => ({
     jsonSchema: { type: "object", additionalProperties: false, properties: {} },
     parse: (value: unknown) => value,

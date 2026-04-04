@@ -22,15 +22,15 @@ import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-s
 import { mergeDefinedConfig, formatError } from "./service/helpers.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
 
-type ServiceLogger = {
-  info: (message: string) => void;
-  warn: (message: string) => void;
-};
-
+/**
+ * Use call-time log sinks (not a captured logger object). `createOpikService` reassigns the
+ * outer `log` in `start()`; a stale `log` reference would leave hook handlers on no-op loggers.
+ */
 export type OpikExporterHookInstall = {
   api: OpenClawPluginApi;
   pluginConfig: OpikPluginConfig;
-  log: ServiceLogger;
+  info: (message: string) => void;
+  warn: (message: string) => void;
   hookInstallFlags: { instrumentPluginApiApplied: boolean };
   getClient: () => Opik | null;
   activeTraces: Map<string, ActiveTrace>;
@@ -100,7 +100,7 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "0" ||
     process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "false";
   if (registerTimeOpikConfig.debugInstrumentPluginApi !== false && !instrumentDisabledByEnv) {
-    instrumentOpenClawPluginApi(ctx.api, { info: (message: string) => ctx.log.info(message) });
+    instrumentOpenClawPluginApi(ctx.api, { info: (message: string) => ctx.info(message) });
     ctx.hookInstallFlags.instrumentPluginApiApplied = true;
   }
 
@@ -117,8 +117,8 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     safeSpanUpdate: ctx.safeSpanUpdate,
     safeSpanEnd: ctx.safeSpanEnd,
     scheduleMediaAttachmentUploads: ctx.scheduleMediaAttachmentUploads,
-    warn: (message) => ctx.log.warn(message),
-    info: (message) => ctx.log.info(message),
+    warn: (message) => ctx.warn(message),
+    info: (message) => ctx.info(message),
     formatError,
   });
 
@@ -136,8 +136,8 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     safeSpanEnd: ctx.safeSpanEnd,
     scheduleMediaAttachmentUploads: ctx.scheduleMediaAttachmentUploads,
     getProjectName: ctx.getHookProjectName,
-    warn: (message) => ctx.log.warn(message),
-    info: (message) => ctx.log.info(message),
+    warn: (message) => ctx.warn(message),
+    info: (message) => ctx.info(message),
     formatError,
   });
 
@@ -151,13 +151,13 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     forgetSubagentSpanHost: ctx.forgetSubagentSpanHost,
     safeSpanUpdate: ctx.safeSpanUpdate,
     safeSpanEnd: ctx.safeSpanEnd,
-    warn: (message) => ctx.log.warn(message),
-    info: (message) => ctx.log.info(message),
+    warn: (message) => ctx.warn(message),
+    info: (message) => ctx.info(message),
     formatError,
   });
 
   ctx.api.on("tool_result_persist", (event) => {
-    logOpikHookEnter(ctx.log.info, "tool_result_persist");
+    logOpikHookEnter(ctx.info, "tool_result_persist");
     if (!ctx.getToolResultPersistSanitizeEnabled()) {
       return;
     }
@@ -171,22 +171,22 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
         return { message: sanitizedMessage };
       }
     } catch (err) {
-      ctx.log.warn(`opik: tool_result_persist failed: ${formatError(err)}`);
+      ctx.warn(`opik: tool_result_persist failed: ${formatError(err)}`);
     }
   });
 
   ctx.api.on("agent_end", (event, agentCtx) => {
-    logOpikHookEnter(ctx.log.info, "agent_end");
+    logOpikHookEnter(ctx.info, "agent_end");
     const sessionKey = agentCtx.sessionKey;
     if (!sessionKey) {
-      ctx.log.info("opik: event=agent_end phase=skip reason=no_session_key");
+      ctx.info("opik: event=agent_end phase=skip reason=no_session_key");
       return;
     }
     ctx.rememberSessionCorrelation(sessionKey, agentCtx.agentId);
 
     const active = ctx.activeTraces.get(sessionKey);
     if (!active) {
-      ctx.log.info(
+      ctx.info(
         `opik: event=agent_end phase=skip reason=no_active_trace sessionKey=${sessionKey} (no prior llm_input; nothing to export for this thread)`,
       );
       return;
@@ -227,7 +227,7 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     });
 
     const traceRef = active.trace;
-    ctx.log.info(
+    ctx.info(
       `opik: event=agent_end phase=ok sessionKey=${sessionKey} success=${event.success} durationMs=${event.durationMs ?? "n/a"} finalize=deferred_macrotask`,
     );
     ctx.scheduleTraceFinalize(sessionKey, traceRef);

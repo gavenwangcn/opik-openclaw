@@ -471,7 +471,8 @@ export function createOpikService(
   registerOpikExporterHooks({
     api,
     pluginConfig,
-    log,
+    info: (message) => log.info(message),
+    warn: (message) => log.warn(message),
     hookInstallFlags,
     getClient: () => client,
     activeTraces,

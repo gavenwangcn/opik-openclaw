@@ -510,8 +510,13 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       toolResultPersistSanitizeEnabled = opikCfg.toolResultPersistSanitizeEnabled === true;
 
       if (!opikCfg?.enabled) {
+        log.info("opik: start skipped (enabled=false)");
         return;
       }
+
+      log.info(
+        `opik: start begin (enabled=true) cfgKeys=${Object.keys(opikCfg as Record<string, unknown>).sort().join(",") || "(none)"}`,
+      );
 
       const apiKey = opikCfg.apiKey ?? process.env.OPIK_API_KEY;
       const apiUrl = opikCfg.apiUrl ?? process.env.OPIK_URL_OVERRIDE;
@@ -522,6 +527,12 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       hookProjectName = projectName;
       hookTags = tags;
       attachmentBaseUrl = (apiUrl ?? DEFAULT_ATTACHMENT_BASE_URL).replace(/\/+$/, "");
+
+      if (!apiKey) {
+        log.warn(
+          "opik: start warning (no apiKey) — set plugins.entries.opik-openclaw.config.apiKey or OPIK_API_KEY; local deployments may still work depending on server config",
+        );
+      }
 
       staleTraceCleanupEnabled = opikCfg.staleTraceCleanupEnabled !== false;
       staleTraceTimeoutMs = Math.max(
@@ -538,6 +549,9 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       flushRetryBaseDelayMs = asNonNegativeNumber(opikCfg.flushRetryBaseDelayMs) ??
         DEFAULT_FLUSH_RETRY_BASE_DELAY_MS;
 
+      log.info(
+        `opik: creating client apiUrl=${apiUrl ?? "(default)"} workspace=${workspaceName} project=${projectName} tags=${tags.join(",")}`,
+      );
       client = new Opik({
         apiKey,
         ...(apiUrl ? { apiUrl } : {}),
@@ -545,11 +559,13 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         workspaceName,
       });
 
+      log.info("opik: validating project target...");
       await validateProjectTarget({
         client,
         projectName,
         workspaceName,
       });
+      log.info("opik: client ready");
 
       if (hookInstallFlags.instrumentPluginApiApplied) {
         log.info(

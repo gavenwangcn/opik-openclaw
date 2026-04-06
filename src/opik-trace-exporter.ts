@@ -8,6 +8,11 @@ import { Opik, type Span, type Trace } from "opik";
 import { createAttachmentUploader } from "./service/attachment-uploader.js";
 import { registerOpikTraceHooks } from "./register-opik-hooks.js";
 import {
+  getSharedOpikRuntimeState,
+  setSharedOpikClient,
+  setSharedOpikRuntimeConfig,
+} from "./shared-opik-runtime.js";
+import {
   ATTACHMENT_UPLOADS_ENABLED,
   DEFAULT_ATTACHMENT_BASE_URL,
   DEFAULT_FLUSH_RETRY_BASE_DELAY_MS,
@@ -75,10 +80,33 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   let toolResultPersistSanitizeEnabled = false;
   const hookInstallFlags = { instrumentPluginApiApplied: false };
 
+  function getEffectiveClient(): Opik | null {
+    return getSharedOpikRuntimeState().client ?? client;
+  }
+
+  function getEffectiveHookProjectName(): string {
+    return getSharedOpikRuntimeState().config?.projectName ?? hookProjectName;
+  }
+
+  function getEffectiveHookTags(): string[] {
+    return getSharedOpikRuntimeState().config?.tags ?? hookTags;
+  }
+
+  function getEffectiveToolResultPersistSanitizeEnabled(): boolean {
+    return (
+      getSharedOpikRuntimeState().config?.toolResultPersistSanitizeEnabled ??
+      toolResultPersistSanitizeEnabled
+    );
+  }
+
+  function getEffectiveAttachmentBaseUrl(): string {
+    return getSharedOpikRuntimeState().config?.attachmentBaseUrl ?? attachmentBaseUrl;
+  }
+
   let flushQueue: Promise<void> = Promise.resolve();
   const attachmentUploader = createAttachmentUploader({
-    getClient: () => client,
-    getAttachmentBaseUrl: () => attachmentBaseUrl,
+    getClient: () => getEffectiveClient(),
+    getAttachmentBaseUrl: () => getEffectiveAttachmentBaseUrl(),
     onWarn: (message) => log.warn(message),
     formatError,
     attachmentsEnabled: ATTACHMENT_UPLOADS_ENABLED,
@@ -267,7 +295,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   }
 
   async function flushWithRetry(reason: string): Promise<void> {
-    const currentClient = client;
+    const currentClient = getEffectiveClient();
     if (!currentClient) return;
 
     const attempts = flushRetryCount + 1;
@@ -473,13 +501,13 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     registerOpikTraceHooks(api, pluginConfig, {
       instanceId,
       hookInstallFlags,
-      getClient: () => client,
+      getClient: () => getEffectiveClient(),
       activeTraces,
       sessionByAgentId,
       getLastActiveSessionKey: () => lastActiveSessionKey,
-      getHookProjectName: () => hookProjectName,
-      getHookTags: () => hookTags,
-      getToolResultPersistSanitizeEnabled: () => toolResultPersistSanitizeEnabled,
+      getHookProjectName: () => getEffectiveHookProjectName(),
+      getHookTags: () => getEffectiveHookTags(),
+      getToolResultPersistSanitizeEnabled: () => getEffectiveToolResultPersistSanitizeEnabled(),
       rememberSessionCorrelation,
       forgetSessionCorrelation,
       closeActiveTrace,
@@ -529,6 +557,15 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       hookProjectName = projectName;
       hookTags = tags;
       attachmentBaseUrl = (apiUrl ?? DEFAULT_ATTACHMENT_BASE_URL).replace(/\/+$/, "");
+      setSharedOpikRuntimeConfig({
+        instanceId,
+        config: {
+          projectName: hookProjectName,
+          tags: hookTags,
+          toolResultPersistSanitizeEnabled,
+          attachmentBaseUrl,
+        },
+      });
 
       if (!apiKey) {
         log.warn(
@@ -560,6 +597,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         projectName,
         workspaceName,
       });
+      setSharedOpikClient({ instanceId, client });
 
       log.info(`opik[#${instanceId}]: validating project target...`);
       await validateProjectTarget({

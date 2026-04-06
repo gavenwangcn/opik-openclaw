@@ -37,6 +37,7 @@
     "src/register-opik-hooks.ts",
     "src/configure.ts",
     "src/service.ts",
+    "src/opik-trace-exporter.ts",
     "src/service/constants.ts",
     "src/service/helpers.ts",
     "src/service/payload-sanitizer.ts",

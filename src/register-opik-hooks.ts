@@ -1,9 +1,11 @@
 /**
  * Opik exporter typed-hook registration (OpenClaw `api.on` → global hook runner).
  *
- * Called synchronously from `createOpikService()` during the plugin `register()` phase,
- * matching bundled plugins that register services + hooks in the same turn (see
- * `diagnostics-otel`, `definePluginEntry` pattern in `index.ts`).
+ * Called from `createOpikTraceExporter().registerHookHandlers(api)` during plugin `register()`,
+ * aligned with bundled plugins (parse config, wire hooks, then `registerService`).
+ *
+ * Hook handlers log via `api.logger` so messages use the active gateway logger (same pattern as
+ * `memory-lancedb-pro`).
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -22,15 +24,7 @@ import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-s
 import { mergeDefinedConfig, formatError } from "./service/helpers.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
 
-/**
- * Use call-time log sinks (not a captured logger object). `createOpikService` reassigns the
- * outer `log` in `start()`; a stale `log` reference would leave hook handlers on no-op loggers.
- */
-export type OpikExporterHookInstall = {
-  api: OpenClawPluginApi;
-  pluginConfig: OpikPluginConfig;
-  info: (message: string) => void;
-  warn: (message: string) => void;
+export type OpikTraceHookBinding = {
   hookInstallFlags: { instrumentPluginApiApplied: boolean };
   getClient: () => Opik | null;
   activeTraces: Map<string, ActiveTrace>;
@@ -75,16 +69,31 @@ export type OpikExporterHookInstall = {
   scheduleTraceFinalize: (sessionKey: string, traceRef: Trace) => void;
 };
 
+/** @deprecated Use `OpikTraceHookBinding`. */
+export type OpikExporterHookInstall = OpikTraceHookBinding & {
+  api: OpenClawPluginApi;
+  pluginConfig: OpikPluginConfig;
+  info: (message: string) => void;
+  warn: (message: string) => void;
+};
+
 /**
  * Registers all Opik exporter `api.on(...)` handlers. Must run during plugin `register()`.
  */
-export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
+export function registerOpikTraceHooks(
+  api: OpenClawPluginApi,
+  pluginConfig: OpikPluginConfig,
+  binding: OpikTraceHookBinding,
+): void {
   void OPIK_INSTRUMENTED_HOOK_REGISTRATION_SITE;
+
+  const info = (message: string) => api.logger.info(message);
+  const warn = (message: string) => api.logger.warn(message);
 
   const opikInstrumentedHookNamesSeen = new Set<string>();
   {
-    const underlyingOn = ctx.api.on.bind(ctx.api);
-    ctx.api.on = ((hookName, handler, opts) => {
+    const underlyingOn = api.on.bind(api);
+    api.on = ((hookName, handler, opts) => {
       if (OPIK_INSTRUMENTED_TYPED_HOOK_NAME_SET.has(String(hookName))) {
         opikInstrumentedHookNamesSeen.add(String(hookName));
       }
@@ -93,72 +102,72 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
   }
 
   const registerTimeOpikConfig = mergeDefinedConfig(
-    parseOpikPluginConfig(ctx.api.pluginConfig),
-    ctx.pluginConfig,
+    parseOpikPluginConfig(api.pluginConfig),
+    pluginConfig,
   );
   const instrumentDisabledByEnv =
     process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "0" ||
     process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API === "false";
   if (registerTimeOpikConfig.debugInstrumentPluginApi !== false && !instrumentDisabledByEnv) {
-    instrumentOpenClawPluginApi(ctx.api, { info: (message: string) => ctx.info(message) });
-    ctx.hookInstallFlags.instrumentPluginApiApplied = true;
+    instrumentOpenClawPluginApi(api, { info });
+    binding.hookInstallFlags.instrumentPluginApiApplied = true;
   }
 
   registerLlmHooks({
-    api: ctx.api,
-    getClient: ctx.getClient,
-    activeTraces: ctx.activeTraces,
-    getProjectName: ctx.getHookProjectName,
-    getTags: ctx.getHookTags,
-    rememberSessionCorrelation: ctx.rememberSessionCorrelation,
-    closeActiveTrace: ctx.closeActiveTrace,
-    forgetSessionCorrelation: ctx.forgetSessionCorrelation,
-    applyContextMeta: ctx.applyContextMeta,
-    safeSpanUpdate: ctx.safeSpanUpdate,
-    safeSpanEnd: ctx.safeSpanEnd,
-    scheduleMediaAttachmentUploads: ctx.scheduleMediaAttachmentUploads,
-    warn: (message) => ctx.warn(message),
-    info: (message) => ctx.info(message),
+    api,
+    getClient: binding.getClient,
+    activeTraces: binding.activeTraces,
+    getProjectName: binding.getHookProjectName,
+    getTags: binding.getHookTags,
+    rememberSessionCorrelation: binding.rememberSessionCorrelation,
+    closeActiveTrace: binding.closeActiveTrace,
+    forgetSessionCorrelation: binding.forgetSessionCorrelation,
+    applyContextMeta: binding.applyContextMeta,
+    safeSpanUpdate: binding.safeSpanUpdate,
+    safeSpanEnd: binding.safeSpanEnd,
+    scheduleMediaAttachmentUploads: binding.scheduleMediaAttachmentUploads,
+    warn,
+    info,
     formatError,
   });
 
   registerToolHooks({
-    api: ctx.api,
-    getClient: ctx.getClient,
-    activeTraces: ctx.activeTraces,
-    sessionByAgentId: ctx.sessionByAgentId,
-    getLastActiveSessionKey: ctx.getLastActiveSessionKey,
-    rememberSessionCorrelation: ctx.rememberSessionCorrelation,
-    resolveSessionSpanContainer: ctx.resolveSessionSpanContainer,
-    warnMissingAfterToolSessionKey: ctx.warnMissingAfterToolSessionKey,
-    nextSpanSeq: ctx.nextSpanSeq,
-    safeSpanUpdate: ctx.safeSpanUpdate,
-    safeSpanEnd: ctx.safeSpanEnd,
-    scheduleMediaAttachmentUploads: ctx.scheduleMediaAttachmentUploads,
-    getProjectName: ctx.getHookProjectName,
-    warn: (message) => ctx.warn(message),
-    info: (message) => ctx.info(message),
+    api,
+    getClient: binding.getClient,
+    activeTraces: binding.activeTraces,
+    sessionByAgentId: binding.sessionByAgentId,
+    getLastActiveSessionKey: binding.getLastActiveSessionKey,
+    rememberSessionCorrelation: binding.rememberSessionCorrelation,
+    resolveSessionSpanContainer: binding.resolveSessionSpanContainer,
+    warnMissingAfterToolSessionKey: binding.warnMissingAfterToolSessionKey,
+    nextSpanSeq: binding.nextSpanSeq,
+    safeSpanUpdate: binding.safeSpanUpdate,
+    safeSpanEnd: binding.safeSpanEnd,
+    scheduleMediaAttachmentUploads: binding.scheduleMediaAttachmentUploads,
+    getProjectName: binding.getHookProjectName,
+    warn,
+    info,
     formatError,
   });
 
   registerSubagentHooks({
-    api: ctx.api,
-    getClient: ctx.getClient,
-    rememberSessionCorrelation: ctx.rememberSessionCorrelation,
-    resolveSubagentSpanContainer: ctx.resolveSubagentSpanContainer,
-    getSubagentSpanHost: ctx.getSubagentSpanHost,
-    rememberSubagentSpanHost: ctx.rememberSubagentSpanHost,
-    forgetSubagentSpanHost: ctx.forgetSubagentSpanHost,
-    safeSpanUpdate: ctx.safeSpanUpdate,
-    safeSpanEnd: ctx.safeSpanEnd,
-    warn: (message) => ctx.warn(message),
-    info: (message) => ctx.info(message),
+    api,
+    getClient: binding.getClient,
+    rememberSessionCorrelation: binding.rememberSessionCorrelation,
+    resolveSubagentSpanContainer: binding.resolveSubagentSpanContainer,
+    getSubagentSpanHost: binding.getSubagentSpanHost,
+    rememberSubagentSpanHost: binding.rememberSubagentSpanHost,
+    forgetSubagentSpanHost: binding.forgetSubagentSpanHost,
+    safeSpanUpdate: binding.safeSpanUpdate,
+    safeSpanEnd: binding.safeSpanEnd,
+    warn,
+    info,
     formatError,
   });
 
-  ctx.api.on("tool_result_persist", (event) => {
-    logOpikHookEnter(ctx.info, "tool_result_persist");
-    if (!ctx.getToolResultPersistSanitizeEnabled()) {
+  api.on("tool_result_persist", (event) => {
+    logOpikHookEnter(info, "tool_result_persist");
+    if (!binding.getToolResultPersistSanitizeEnabled()) {
       return;
     }
     try {
@@ -171,35 +180,35 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
         return { message: sanitizedMessage };
       }
     } catch (err) {
-      ctx.warn(`opik: tool_result_persist failed: ${formatError(err)}`);
+      warn(`opik: tool_result_persist failed: ${formatError(err)}`);
     }
   });
 
-  ctx.api.on("agent_end", (event, agentCtx) => {
-    logOpikHookEnter(ctx.info, "agent_end");
+  api.on("agent_end", (event, agentCtx) => {
+    logOpikHookEnter(info, "agent_end");
     const sessionKey = agentCtx.sessionKey;
     if (!sessionKey) {
-      ctx.info("opik: event=agent_end phase=skip reason=no_session_key");
+      info("opik: event=agent_end phase=skip reason=no_session_key");
       return;
     }
-    ctx.rememberSessionCorrelation(sessionKey, agentCtx.agentId);
+    binding.rememberSessionCorrelation(sessionKey, agentCtx.agentId);
 
-    const active = ctx.activeTraces.get(sessionKey);
+    const active = binding.activeTraces.get(sessionKey);
     if (!active) {
-      ctx.info(
+      info(
         `opik: event=agent_end phase=skip reason=no_active_trace sessionKey=${sessionKey} (no prior llm_input; nothing to export for this thread)`,
       );
       return;
     }
 
-    ctx.applyContextMeta(active, agentCtx as Record<string, unknown>);
+    binding.applyContextMeta(active, agentCtx as Record<string, unknown>);
     for (const [toolKey, toolSpan] of active.toolSpans) {
-      ctx.safeSpanEnd(toolSpan, `agent_end orphan tool sessionKey=${sessionKey} toolKey=${toolKey}`);
+      binding.safeSpanEnd(toolSpan, `agent_end orphan tool sessionKey=${sessionKey} toolKey=${toolKey}`);
     }
     active.toolSpans.clear();
 
     for (const [subagentKey, subagentSpan] of active.subagentSpans) {
-      ctx.safeSpanEnd(
+      binding.safeSpanEnd(
         subagentSpan,
         `agent_end orphan subagent sessionKey=${sessionKey} subagentKey=${subagentKey}`,
       );
@@ -215,10 +224,10 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
       ) as unknown[]) ?? [],
     };
 
-    ctx.scheduleMediaAttachmentUploads({
+    binding.scheduleMediaAttachmentUploads({
       entityType: "trace",
       entity: active.trace,
-      projectName: ctx.getHookProjectName(),
+      projectName: binding.getHookProjectName(),
       reason: `agent_end sessionKey=${sessionKey}`,
       payloads: [
         event.error,
@@ -227,10 +236,10 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
     });
 
     const traceRef = active.trace;
-    ctx.info(
+    info(
       `opik: event=agent_end phase=ok sessionKey=${sessionKey} success=${event.success} durationMs=${event.durationMs ?? "n/a"} finalize=deferred_macrotask`,
     );
-    ctx.scheduleTraceFinalize(sessionKey, traceRef);
+    binding.scheduleTraceFinalize(sessionKey, traceRef);
   });
 
   for (const name of OPIK_INSTRUMENTED_TYPED_HOOK_NAMES) {
@@ -241,4 +250,9 @@ export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
       );
     }
   }
+}
+
+/** @deprecated Use `registerOpikTraceHooks`. */
+export function registerOpikExporterHooks(ctx: OpikExporterHookInstall): void {
+  registerOpikTraceHooks(ctx.api, ctx.pluginConfig, ctx);
 }

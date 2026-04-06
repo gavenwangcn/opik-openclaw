@@ -1,6 +1,6 @@
 /**
  * Typed hook names that Opik instruments for register/FIRED diagnostics.
- * Keep in sync with actual `api.on(...)` registrations in createOpikService.
+ * Keep in sync with actual `api.on(...)` registrations in `register-opik-hooks.ts`.
  */
 export const OPIK_INSTRUMENTED_TYPED_HOOK_NAMES = [
   "llm_input",

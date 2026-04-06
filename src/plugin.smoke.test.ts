@@ -6,14 +6,6 @@ vi.mock("opik", () => ({
   disableLogger: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/plugin-entry", () => ({
-  definePluginEntry: <T extends Record<string, unknown>>(def: T) => def,
-  emptyPluginConfigSchema: () => ({
-    jsonSchema: { type: "object", additionalProperties: false, properties: {} },
-    parse: (value: unknown) => value,
-  }),
-}));
-
 import plugin from "../index.js";
 
 describe("plugin smoke", () => {
@@ -21,8 +13,14 @@ describe("plugin smoke", () => {
     const registerService = vi.fn();
     const registerCli = vi.fn();
 
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     plugin.register({
       pluginConfig: { enabled: true },
+      on: vi.fn((name: string, handler: unknown) => {
+        void name;
+        void handler;
+      }),
+      logger,
       registerService,
       registerCli,
       runtime: {

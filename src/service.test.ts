@@ -85,10 +85,12 @@ function createLogger() {
 /** Minimal api object matching what createOpikService expects. */
 function createApi() {
   const hooks: Record<string, Function> = {};
+  const logger = createLogger();
   const api = {
     on: vi.fn((hookName: string, handler: Function) => {
       hooks[hookName] = handler;
     }),
+    logger,
     registerService: vi.fn(),
     pluginConfig: { debugInstrumentPluginApi: false } as Record<string, unknown>,
   };

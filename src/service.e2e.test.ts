@@ -190,6 +190,10 @@ function createApi() {
     on: (hookName: string, handler: HookHandler) => {
       hooks[hookName] = handler;
     },
+    logger: {
+      info: () => undefined,
+      warn: () => undefined,
+    },
     registerService: () => undefined,
     pluginConfig: { debugInstrumentPluginApi: false },
   };

@@ -3,5 +3,5 @@
  * handler ran before getClient/session checks or other early exits.
  */
 export function logOpikHookEnter(info: (message: string) => void, event: string): void {
-  info(`opik: hook_enter event=${event}`);
+  info(`hook_enter event=${event}`);
 }

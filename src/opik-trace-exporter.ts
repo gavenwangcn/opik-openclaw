@@ -45,6 +45,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   service: OpenClawPluginService;
   registerHookHandlers(api: OpenClawPluginApi): void;
 } {
+  const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let client: Opik | null = null;
   const activeTraces = new Map<string, ActiveTrace>();
   const subagentSpanHosts = new Map<
@@ -154,7 +155,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     if (warnedMissingAfterToolSessionKey) return;
     warnedMissingAfterToolSessionKey = true;
     log.warn(
-      `opik: after_tool_call missing sessionKey; using ${fallbackMode} fallback correlation (upgrade OpenClaw for strict context propagation)`,
+      `opik[#${instanceId}]: after_tool_call missing sessionKey; using ${fallbackMode} fallback correlation (upgrade OpenClaw for strict context propagation)`,
     );
   }
 
@@ -274,12 +275,12 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       try {
         await currentClient.flush();
         exporterMetrics.flushSuccesses += 1;
-        log.info(`opik: flush ok (${reason})`);
+        log.info(`opik[#${instanceId}]: flush ok (${reason})`);
         return;
       } catch (err) {
         exporterMetrics.flushFailures += 1;
         log.warn(
-          `opik: flush failed (${reason}) attempt ${attempt}/${attempts}: ${formatError(err)}`,
+          `opik[#${instanceId}]: flush failed (${reason}) attempt ${attempt}/${attempts}: ${formatError(err)}`,
         );
 
         if (attempt >= attempts) {
@@ -365,12 +366,12 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   function finalizeTrace(sessionKey: string): void {
     const active = activeTraces.get(sessionKey);
     if (!active) {
-      log.info(`opik: trace finalize skipped (no active trace) sessionKey=${sessionKey}`);
+      log.info(`opik[#${instanceId}]: trace finalize skipped (no active trace) sessionKey=${sessionKey}`);
       return;
     }
 
     log.info(
-      `opik: trace finalize start sessionKey=${sessionKey} llmSpanOpen=${Boolean(active.llmSpan)} toolSpansOpen=${active.toolSpans.size} subagentSpansOpen=${active.subagentSpans.size}`,
+      `opik[#${instanceId}]: trace finalize start sessionKey=${sessionKey} llmSpanOpen=${Boolean(active.llmSpan)} toolSpansOpen=${active.toolSpans.size} subagentSpansOpen=${active.subagentSpans.size}`,
     );
 
     // End any remaining open child spans (LLM span if llm_output didn't fire).
@@ -437,7 +438,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     activeTraces.delete(sessionKey);
     forgetSessionCorrelation(sessionKey);
     scheduleFlush(`trace-finalized sessionKey=${sessionKey}`);
-    log.info(`opik: trace finalize done sessionKey=${sessionKey} flush_scheduled=true`);
+    log.info(`opik[#${instanceId}]: trace finalize done sessionKey=${sessionKey} flush_scheduled=true`);
   }
 
   const pendingFinalizeHandles = new Set<ReturnType<typeof setTimeout>>();
@@ -461,7 +462,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         finalizeTrace(sessionKey);
       } else {
         log.info(
-          `opik: finalize deferred callback skipped sessionKey=${sessionKey} reason=${!current ? "no_active_trace" : "trace_ref_mismatch"}`,
+          `opik[#${instanceId}]: finalize deferred callback skipped sessionKey=${sessionKey} reason=${!current ? "no_active_trace" : "trace_ref_mismatch"}`,
         );
       }
     }, 0);
@@ -470,6 +471,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
 
   function registerHookHandlers(api: OpenClawPluginApi): void {
     registerOpikTraceHooks(api, pluginConfig, {
+      instanceId,
       hookInstallFlags,
       getClient: () => client,
       activeTraces,
@@ -510,12 +512,12 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       toolResultPersistSanitizeEnabled = opikCfg.toolResultPersistSanitizeEnabled === true;
 
       if (!opikCfg?.enabled) {
-        log.info("opik: start skipped (enabled=false)");
+        log.info(`opik[#${instanceId}]: start skipped (enabled=false)`);
         return;
       }
 
       log.info(
-        `opik: start begin (enabled=true) cfgKeys=${Object.keys(opikCfg as Record<string, unknown>).sort().join(",") || "(none)"}`,
+        `opik[#${instanceId}]: start begin (enabled=true) cfgKeys=${Object.keys(opikCfg as Record<string, unknown>).sort().join(",") || "(none)"}`,
       );
 
       const apiKey = opikCfg.apiKey ?? process.env.OPIK_API_KEY;
@@ -530,7 +532,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
 
       if (!apiKey) {
         log.warn(
-          "opik: start warning (no apiKey) — set plugins.entries.opik-openclaw.config.apiKey or OPIK_API_KEY; local deployments may still work depending on server config",
+          `opik[#${instanceId}]: start warning (no apiKey) — set plugins.entries.opik-openclaw.config.apiKey or OPIK_API_KEY; local deployments may still work depending on server config`,
         );
       }
 
@@ -550,7 +552,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         DEFAULT_FLUSH_RETRY_BASE_DELAY_MS;
 
       log.info(
-        `opik: creating client apiUrl=${apiUrl ?? "(default)"} workspace=${workspaceName} project=${projectName} tags=${tags.join(",")}`,
+        `opik[#${instanceId}]: creating client apiUrl=${apiUrl ?? "(default)"} workspace=${workspaceName} project=${projectName} tags=${tags.join(",")}`,
       );
       client = new Opik({
         apiKey,
@@ -559,17 +561,17 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         workspaceName,
       });
 
-      log.info("opik: validating project target...");
+      log.info(`opik[#${instanceId}]: validating project target...`);
       await validateProjectTarget({
         client,
         projectName,
         workspaceName,
       });
-      log.info("opik: client ready");
+      log.info(`opik[#${instanceId}]: client ready`);
 
       if (hookInstallFlags.instrumentPluginApiApplied) {
         log.info(
-          "opik: [instrument] on (default) — register/FIRED for llm_*, agent_end, tool_*, subagent_*; disable with debugInstrumentPluginApi:false or OPIK_DEBUG_INSTRUMENT_PLUGIN_API=0",
+          `opik[#${instanceId}]: [instrument] on (default) — register/FIRED for llm_*, agent_end, tool_*, subagent_*; disable with debugInstrumentPluginApi:false or OPIK_DEBUG_INSTRUMENT_PLUGIN_API=0`,
         );
       }
 
@@ -660,10 +662,10 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       };
 
       log.info(
-        `opik: typed hook names (instrumented list): ${OPIK_INSTRUMENTED_TYPED_HOOK_NAMES.join(", ")}; also tool_result_persist, agent_end`,
+        `opik[#${instanceId}]: typed hook names (instrumented list): ${OPIK_INSTRUMENTED_TYPED_HOOK_NAMES.join(", ")}; also tool_result_persist, agent_end`,
       );
       log.info(
-        `opik: exporting traces to project "${projectName}" (staleCleanup=${staleTraceCleanupEnabled ? "on" : "off"}, staleTimeoutMs=${staleTraceTimeoutMs}, staleSweepMs=${staleSweepIntervalMs}, flushRetryCount=${flushRetryCount}, flushRetryBaseDelayMs=${flushRetryBaseDelayMs})`,
+        `opik[#${instanceId}]: exporting traces to project "${projectName}" (staleCleanup=${staleTraceCleanupEnabled ? "on" : "off"}, staleTimeoutMs=${staleTraceTimeoutMs}, staleSweepMs=${staleSweepIntervalMs}, flushRetryCount=${flushRetryCount}, flushRetryBaseDelayMs=${flushRetryBaseDelayMs})`,
       );
     },
 
@@ -690,7 +692,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       }
 
       log.info(
-        `opik: exporter metrics flushSuccesses=${exporterMetrics.flushSuccesses} flushFailures=${exporterMetrics.flushFailures} flushRetries=${exporterMetrics.flushRetries} traceUpdateErrors=${exporterMetrics.traceUpdateErrors} traceEndErrors=${exporterMetrics.traceEndErrors} spanUpdateErrors=${exporterMetrics.spanUpdateErrors} spanEndErrors=${exporterMetrics.spanEndErrors}`,
+        `opik[#${instanceId}]: exporter metrics flushSuccesses=${exporterMetrics.flushSuccesses} flushFailures=${exporterMetrics.flushFailures} flushRetries=${exporterMetrics.flushRetries} traceUpdateErrors=${exporterMetrics.traceUpdateErrors} traceEndErrors=${exporterMetrics.traceEndErrors} spanUpdateErrors=${exporterMetrics.spanUpdateErrors} spanEndErrors=${exporterMetrics.spanEndErrors}`,
       );
     },
   } satisfies OpenClawPluginService;

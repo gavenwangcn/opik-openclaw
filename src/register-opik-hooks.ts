@@ -25,6 +25,7 @@ import { mergeDefinedConfig, formatError } from "./service/helpers.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
 
 export type OpikTraceHookBinding = {
+  instanceId: string;
   hookInstallFlags: { instrumentPluginApiApplied: boolean };
   getClient: () => Opik | null;
   activeTraces: Map<string, ActiveTrace>;
@@ -87,8 +88,9 @@ export function registerOpikTraceHooks(
 ): void {
   void OPIK_INSTRUMENTED_HOOK_REGISTRATION_SITE;
 
-  const info = (message: string) => api.logger.info(message);
-  const warn = (message: string) => api.logger.warn(message);
+  const prefix = `opik[#${binding.instanceId}]:`;
+  const info = (message: string) => api.logger.info(`${prefix} ${message}`);
+  const warn = (message: string) => api.logger.warn(`${prefix} ${message}`);
 
   const opikInstrumentedHookNamesSeen = new Set<string>();
   {

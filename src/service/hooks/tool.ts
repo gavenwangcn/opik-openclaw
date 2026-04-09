@@ -1,5 +1,4 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { Opik, Span, Trace } from "opik";
 import type { ActiveTrace } from "../../types.js";
 import { asNonEmptyString, resolveRunId, resolveToolCallId } from "../helpers.js";
 import { logOpikHookEnter } from "../hook-enter-log.js";
@@ -7,18 +6,18 @@ import { sanitizeStringForOpik, sanitizeValueForOpik } from "../payload-sanitize
 
 type ToolHooksDeps = {
   api: OpenClawPluginApi;
-  getClient: () => Opik | null;
+  getClient: () => unknown | null;
   activeTraces: Map<string, ActiveTrace>;
   sessionByAgentId: Map<string, string>;
   getLastActiveSessionKey: () => string | undefined;
   rememberSessionCorrelation: (sessionKey: string, agentId?: unknown) => void;
   resolveSessionSpanContainer: (
     sessionKey: string,
-  ) => { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined;
+  ) => { sessionKey: string; active: ActiveTrace; parent: any } | undefined;
   warnMissingAfterToolSessionKey: (fallbackMode: string) => void;
   nextSpanSeq: () => number;
-  safeSpanUpdate: (span: Span, payload: Record<string, unknown>, reason: string) => void;
-  safeSpanEnd: (span: Span, reason: string) => void;
+  safeSpanUpdate: (span: { update: (p: Record<string, unknown>) => void }, payload: Record<string, unknown>, reason: string) => void;
+  safeSpanEnd: (span: { end: () => Promise<void> | void }, reason: string) => void;
   scheduleMediaAttachmentUploads: (params: {
     entityType: "trace" | "span";
     entity: unknown;
@@ -36,7 +35,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
   deps.api.on("before_tool_call", (event, toolCtx) => {
     logOpikHookEnter(deps.info, "before_tool_call");
     if (!deps.getClient()) {
-      deps.info("opik: event=before_tool_call phase=skip reason=no_opik_client");
+      deps.info("opik: event=before_tool_call phase=skip reason=no_local_tracer");
       return;
     }
     const sessionKey = toolCtx.sessionKey;
@@ -70,7 +69,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
       ...(toolCallId ? { toolCallId } : {}),
     };
 
-    let toolSpan: Span;
+    let toolSpan: any;
     try {
       toolSpan = container.parent.span({
         name: event.toolName,
@@ -116,7 +115,7 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
   deps.api.on("after_tool_call", (event, toolCtx) => {
     logOpikHookEnter(deps.info, "after_tool_call");
     if (!deps.getClient()) {
-      deps.info("opik: event=after_tool_call phase=skip reason=no_opik_client");
+      deps.info("opik: event=after_tool_call phase=skip reason=no_local_tracer");
       return;
     }
     const eventObj = event as Record<string, unknown>;
@@ -169,7 +168,9 @@ export function registerToolHooks(deps: ToolHooksDeps): void {
     active.lastActivityAt = Date.now();
 
     let matchedKey: string | undefined;
-    let matchedSpan: Span | undefined;
+    let matchedSpan:
+      | { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void }
+      | undefined;
     if (toolCallId) {
       const toolCallKey = `session:${sessionKey}:toolcall:${toolCallId}`;
       const toolCallSpan = active.toolSpans.get(toolCallKey);

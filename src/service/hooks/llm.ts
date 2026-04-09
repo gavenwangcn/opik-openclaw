@@ -1,5 +1,4 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { Opik, Span, Trace } from "opik";
 import type { ActiveTrace } from "../../types.js";
 import { OPIK_CREATED_FROM } from "../constants.js";
 import {
@@ -13,7 +12,7 @@ import { sanitizeValueForOpik } from "../payload-sanitizer.js";
 
 type LlmHooksDeps = {
   api: OpenClawPluginApi;
-  getClient: () => Opik | null;
+  getClient: () => { trace: (p: any) => any; flush: () => Promise<void> } | null;
   activeTraces: Map<string, ActiveTrace>;
   /** Resolved at hook invocation (updated when the service starts). */
   getTags: () => string[];
@@ -22,8 +21,8 @@ type LlmHooksDeps = {
   closeActiveTrace: (active: ActiveTrace, reason: string) => void;
   forgetSessionCorrelation: (sessionKey: string) => void;
   applyContextMeta: (active: ActiveTrace, ctx: Record<string, unknown>) => void;
-  safeSpanUpdate: (span: Span, payload: Record<string, unknown>, reason: string) => void;
-  safeSpanEnd: (span: Span, reason: string) => void;
+  safeSpanUpdate: (span: { update: (p: Record<string, unknown>) => void }, payload: Record<string, unknown>, reason: string) => void;
+  safeSpanEnd: (span: { end: () => Promise<void> | void }, reason: string) => void;
   scheduleMediaAttachmentUploads: (params: {
     entityType: "trace" | "span";
     entity: unknown;
@@ -41,7 +40,7 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
     logOpikHookEnter(deps.info, "llm_input");
     const client = deps.getClient();
     if (!client) {
-      deps.info("opik: event=llm_input phase=skip reason=no_opik_client");
+      deps.info("opik: event=llm_input phase=skip reason=no_local_tracer");
       return;
     }
     const sessionKey = agentCtx.sessionKey;
@@ -62,7 +61,7 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
       deps.forgetSessionCorrelation(sessionKey);
     }
 
-    let trace: Trace;
+    let trace: any;
     try {
       const hookTags = deps.getTags();
       const sanitizedTraceInput = sanitizeValueForOpik({
@@ -91,7 +90,7 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
       return;
     }
 
-    let llmSpan: Span | null = null;
+    let llmSpan: any | null = null;
     try {
       const sanitizedLlmInput = sanitizeValueForOpik({
         prompt: event.prompt,
@@ -142,7 +141,7 @@ export function registerLlmHooks(deps: LlmHooksDeps): void {
   deps.api.on("llm_output", (event, agentCtx) => {
     logOpikHookEnter(deps.info, "llm_output");
     if (!deps.getClient()) {
-      deps.info("opik: event=llm_output phase=skip reason=no_opik_client");
+      deps.info("opik: event=llm_output phase=skip reason=no_local_tracer");
       return;
     }
     const sessionKey = agentCtx.sessionKey;

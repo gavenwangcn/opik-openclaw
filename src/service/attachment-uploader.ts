@@ -1,7 +1,6 @@
 import { openAsBlob } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
-import type { Opik } from "opik";
 import {
   ATTACHMENT_UPLOADS_ENABLED,
   ATTACHMENT_UPLOAD_PART_SIZE_BYTES,
@@ -32,14 +31,14 @@ type AttachmentsApi = {
   }) => Promise<void>;
 };
 
-type OpikWithAttachmentsApi = Opik & {
+type OpikWithAttachmentsApi = {
   api?: {
     attachments?: AttachmentsApi;
   };
 };
 
 type AttachmentUploaderDeps = {
-  getClient: () => Opik | null;
+  getClient: () => unknown | null;
   getAttachmentBaseUrl: () => string;
   onWarn: (message: string) => void;
   formatError: (err: unknown) => string;

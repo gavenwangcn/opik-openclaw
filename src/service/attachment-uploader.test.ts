@@ -2,7 +2,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { Opik } from "opik";
 import {
   ATTACHMENT_UPLOAD_PART_SIZE_BYTES,
   LOCAL_ATTACHMENT_UPLOAD_MAGIC_ID,
@@ -59,10 +58,11 @@ describe("attachment uploader", () => {
     const baseUrl = "https://foo.bar/opik?a=1";
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => baseUrl,
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
     });
 
     uploader.scheduleMediaAttachmentUploads({
@@ -90,10 +90,11 @@ describe("attachment uploader", () => {
     const client = { api: { attachments: attachmentsApi } };
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
       uploadedAttachmentCacheMaxKeys: 2,
     });
 
@@ -138,10 +139,11 @@ describe("attachment uploader", () => {
     let client: { api?: { attachments?: MockAttachmentsApi } } = { api: {} };
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
     });
 
     uploader.scheduleMediaAttachmentUploads({
@@ -174,10 +176,11 @@ describe("attachment uploader", () => {
     const client = { api: { attachments: attachmentsApi } };
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
     });
 
     uploader.scheduleMediaAttachmentUploads({
@@ -200,10 +203,11 @@ describe("attachment uploader", () => {
     const client = { api: { attachments: attachmentsApi } };
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
     });
 
     uploader.scheduleMediaAttachmentUploads({
@@ -236,10 +240,11 @@ describe("attachment uploader", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),
+      attachmentsEnabled: true,
     });
 
     uploader.scheduleMediaAttachmentUploads({
@@ -270,7 +275,7 @@ describe("attachment uploader", () => {
     const client = { api: { attachments: attachmentsApi } };
 
     const uploader = createAttachmentUploader({
-      getClient: () => client as unknown as Opik,
+      getClient: () => client as unknown,
       getAttachmentBaseUrl: () => "https://www.comet.com/opik/api",
       onWarn: () => undefined,
       formatError: (err) => String(err),

@@ -1,11 +1,18 @@
-import type { Span, Trace } from "opik";
-
 export type OpikPluginConfig = {
   enabled?: boolean;
+  /** @deprecated Not used in local DuckDB mode. */
   apiKey?: string;
+  /** @deprecated Not used in local DuckDB mode. */
   apiUrl?: string;
+  /** @deprecated Not used in local DuckDB mode. */
   projectName?: string;
+  /** @deprecated Not used in local DuckDB mode. */
   workspaceName?: string;
+  /**
+   * DuckDB file path to store traces locally.
+   * If omitted, defaults to a user-home `.openclaw/data/...` path.
+   */
+  duckdbPath?: string;
   tags?: string[];
   toolResultPersistSanitizeEnabled?: boolean;
   staleTraceTimeoutMs?: number;
@@ -59,6 +66,7 @@ export function parseOpikPluginConfig(raw: unknown): OpikPluginConfig {
     apiUrl: asOptionalString(cfg.apiUrl),
     projectName: asOptionalTrimmedString(cfg.projectName),
     workspaceName: asOptionalTrimmedString(cfg.workspaceName),
+    duckdbPath: asOptionalTrimmedString(cfg.duckdbPath),
     tags,
     toolResultPersistSanitizeEnabled:
       typeof cfg.toolResultPersistSanitizeEnabled === "boolean"
@@ -77,10 +85,23 @@ export function parseOpikPluginConfig(raw: unknown): OpikPluginConfig {
 
 /** Active trace state for a single agent run, keyed by sessionKey. */
 export type ActiveTrace = {
-  trace: Trace;
-  llmSpan: Span | null;
-  toolSpans: Map<string, Span>;
-  subagentSpans: Map<string, Span>;
+  trace: {
+    update(payload: Record<string, unknown>): void;
+    span(params: {
+      name: string;
+      type?: "llm" | "tool" | "subagent" | "trace";
+      model?: string;
+      provider?: string;
+      input?: unknown;
+    }): {
+      update(payload: Record<string, unknown>): void;
+      end(): Promise<void> | void;
+    };
+    end(): Promise<void> | void;
+  };
+  llmSpan: { update(payload: Record<string, unknown>): void; end(): Promise<void> | void } | null;
+  toolSpans: Map<string, { update(payload: Record<string, unknown>): void; end(): Promise<void> | void }>;
+  subagentSpans: Map<string, { update(payload: Record<string, unknown>): void; end(): Promise<void> | void }>;
   startedAt: number;
   lastActivityAt: number;
   /** Cost metadata accumulated from model.usage diagnostic events. */

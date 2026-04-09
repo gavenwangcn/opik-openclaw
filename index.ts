@@ -1,16 +1,12 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { disableLogger } from "opik";
 import { registerOpikCli } from "./src/configure.js";
 import { createOpikTraceExporter } from "./src/opik-trace-exporter.js";
 import { parseOpikPluginConfig } from "./src/types.js";
 
-// Suppress Opik SDK tslog console output
-disableLogger();
-
 const opikOpenClawPlugin = {
   id: "opik-openclaw",
-  name: "Opik",
-  description: "Export LLM traces and spans to Opik for observability",
+  name: "OpenClaw trace store",
+  description: "Store LLM traces/spans in local DuckDB (TruLens-compatible + observability UI tables)",
 
   register(api: OpenClawPluginApi) {
     const pluginConfig = parseOpikPluginConfig(api.pluginConfig);

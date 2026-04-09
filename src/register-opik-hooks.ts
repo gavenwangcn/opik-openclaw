@@ -9,7 +9,6 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { Opik, Span, Trace } from "opik";
 import { registerLlmHooks } from "./service/hooks/llm.js";
 import { registerSubagentHooks } from "./service/hooks/subagent.js";
 import { registerToolHooks } from "./service/hooks/tool.js";
@@ -23,11 +22,12 @@ import {
 import { sanitizeStringForOpik, sanitizeValueForOpik } from "./service/payload-sanitizer.js";
 import { mergeDefinedConfig, formatError } from "./service/helpers.js";
 import { parseOpikPluginConfig, type ActiveTrace, type OpikPluginConfig } from "./types.js";
+import type { LocalClient } from "./shared-opik-runtime.js";
 
 export type OpikTraceHookBinding = {
   instanceId: string;
   hookInstallFlags: { instrumentPluginApiApplied: boolean };
-  getClient: () => Opik | null;
+  getClient: () => LocalClient | null;
   activeTraces: Map<string, ActiveTrace>;
   sessionByAgentId: Map<string, string>;
   getLastActiveSessionKey: () => string | undefined;
@@ -40,26 +40,48 @@ export type OpikTraceHookBinding = {
   applyContextMeta: (active: ActiveTrace, ctx: Record<string, unknown>) => void;
   resolveSessionSpanContainer: (
     sessionKey: string,
-  ) => { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined;
+  ) =>
+    | {
+        sessionKey: string;
+        active: ActiveTrace;
+        parent: { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void };
+      }
+    | undefined;
   resolveSubagentSpanContainer: (params: {
     requesterSessionKey?: string;
     childSessionKey?: string;
     targetSessionKey?: string;
-  }) => { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined;
+  }) =>
+    | {
+        sessionKey: string;
+        active: ActiveTrace;
+        parent: { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void };
+      }
+    | undefined;
   getSubagentSpanHost: (
     sessionKey: string,
-  ) => { hostSessionKey: string; active: ActiveTrace; span: Span } | undefined;
+  ) =>
+    | {
+        hostSessionKey: string;
+        active: ActiveTrace;
+        span: { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void };
+      }
+    | undefined;
   rememberSubagentSpanHost: (
     sessionKey: string,
     hostSessionKey: string,
     active: ActiveTrace,
-    span: Span,
+    span: { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void },
   ) => void;
   forgetSubagentSpanHost: (sessionKey: string) => void;
   warnMissingAfterToolSessionKey: (fallbackMode: string) => void;
   nextSpanSeq: () => number;
-  safeSpanUpdate: (span: Span, payload: Record<string, unknown>, reason: string) => void;
-  safeSpanEnd: (span: Span, reason: string) => void;
+  safeSpanUpdate: (
+    span: { update: (p: Record<string, unknown>) => void },
+    payload: Record<string, unknown>,
+    reason: string,
+  ) => void;
+  safeSpanEnd: (span: { end: () => Promise<void> | void }, reason: string) => void;
   scheduleMediaAttachmentUploads: (params: {
     entityType: "trace" | "span";
     entity: unknown;
@@ -67,7 +89,10 @@ export type OpikTraceHookBinding = {
     reason: string;
     payloads: unknown[];
   }) => void;
-  scheduleTraceFinalize: (sessionKey: string, traceRef: Trace) => void;
+  scheduleTraceFinalize: (
+    sessionKey: string,
+    traceRef: { update: (p: Record<string, unknown>) => void; end: () => Promise<void> | void },
+  ) => void;
 };
 
 /** @deprecated Use `OpikTraceHookBinding`. */

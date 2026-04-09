@@ -25,21 +25,28 @@ const opikState = vi.hoisted(() => {
   return { createMockSpan, createMockTrace, resetCounter: () => (spanIdCounter = 0) };
 });
 
-const mockOpikConstructor = vi.hoisted(() => vi.fn());
+const mockDuckDBConstructor = vi.hoisted(() => vi.fn());
 const mockTraceFn = vi.hoisted(() => vi.fn());
-const mockRetrieveProject = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockScheduleMediaAttachmentUploads = vi.hoisted(() => vi.fn());
 const mockWaitForUploads = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockResetAttachments = vi.hoisted(() => vi.fn());
 
-vi.mock("opik", () => ({
-  Opik: class {
+vi.mock("./storage/duckdb-trulens-writer.js", () => ({
+  DuckDBTruLensWriter: class DuckDBTruLensWriter {
+    constructor(config: { path?: string }) {
+      mockDuckDBConstructor(config);
+    }
+    ensureReady = vi.fn().mockResolvedValue(undefined);
+    close = vi.fn().mockResolvedValue(undefined);
+    getDbPath = () => "mock-duckdb-path";
+  },
+}));
+
+vi.mock("./local-tracer.js", () => ({
+  LocalTracer: class LocalTracer {
     trace = mockTraceFn;
     flush = mockFlush;
-    projects = { retrieveProject: mockRetrieveProject };
-    constructor(opts?: unknown) {
-      mockOpikConstructor(opts);
-    }
+    constructor(_writer: unknown) {}
   },
 }));
 
@@ -86,15 +93,21 @@ function createLogger() {
 function createApi() {
   const hooks: Record<string, Function> = {};
   const logger = createLogger();
+  const registerHook = vi.fn((hookName: string, handler: Function) => {
+    hooks[hookName] = handler;
+  });
   const api = {
-    on: vi.fn((hookName: string, handler: Function) => {
-      hooks[hookName] = handler;
-    }),
+    on: registerHook,
     logger,
     registerService: vi.fn(),
     pluginConfig: { debugInstrumentPluginApi: false } as Record<string, unknown>,
   };
-  return { api, hooks };
+  return { api, hooks, registerHook };
+}
+
+/** `scheduleTraceFinalize` uses `setTimeout(0)` — run after that macrotask (not `queueMicrotask`). */
+async function flushDeferredFinalize(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 type OpikCfg = {
@@ -103,6 +116,7 @@ type OpikCfg = {
   apiUrl?: string;
   projectName?: string;
   workspaceName?: string;
+  duckdbPath?: string;
   tags?: string[];
   toolResultPersistSanitizeEnabled?: boolean;
   staleTraceTimeoutMs?: number;
@@ -154,12 +168,12 @@ describe("opik service", () => {
     opikState.resetCounter();
     diagnosticListeners.length = 0;
     mockTraceFn.mockImplementation((_opts?: unknown) => opikState.createMockTrace());
-    mockRetrieveProject.mockReset();
-    mockRetrieveProject.mockResolvedValue(undefined);
+    mockDuckDBConstructor.mockClear();
     delete process.env.OPIK_API_KEY;
     delete process.env.OPIK_URL_OVERRIDE;
     delete process.env.OPIK_PROJECT_NAME;
     delete process.env.OPIK_WORKSPACE;
+    delete process.env.OPIK_DUCKDB_PATH;
     delete process.env.OPIK_DEBUG_INSTRUMENT_PLUGIN_API;
   });
 
@@ -172,60 +186,48 @@ describe("opik service", () => {
   // =========================================================================
   describe("lifecycle & config gating", () => {
     test("no-ops when opik.enabled=false", async () => {
-      const { api, hooks } = createApi();
+      const { api, hooks, registerHook } = createApi();
       const service = createOpikService(api as any);
-      expect(api.on).toHaveBeenCalled();
+      expect(registerHook).toHaveBeenCalled();
       expect(hooks.llm_input).toEqual(expect.any(Function));
 
       await service.start(createServiceContext(false) as any);
 
-      expect(mockOpikConstructor).not.toHaveBeenCalled();
+      expect(mockDuckDBConstructor).not.toHaveBeenCalled();
       invokeHook(hooks, "llm_input", { model: "m", provider: "p", prompt: "x" }, agentCtx("s1"));
-      expect(mockOpikConstructor).not.toHaveBeenCalled();
+      expect(mockDuckDBConstructor).not.toHaveBeenCalled();
     });
 
-    test("initializes Opik client with config values", async () => {
+    test("initializes DuckDB writer with duckdbPath from config", async () => {
       const { api } = createApi();
       const service = createOpikService(api as any);
       await service.start(
         createServiceContext(true, {
           enabled: true,
           apiKey: "my-key",
-          apiUrl: "https://opik.example.com",
-          projectName: "my-project",
-          workspaceName: "my-workspace",
+          duckdbPath: "/tmp/my-traces.duckdb",
         }) as any,
       );
 
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "my-key",
-        apiUrl: "https://opik.example.com",
-        projectName: "my-project",
-        workspaceName: "my-workspace",
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/tmp/my-traces.duckdb",
       });
     });
 
-    test("trims project and workspace names from runtime config", async () => {
+    test("trims duckdbPath from runtime config", async () => {
       const { api } = createApi();
       const service = createOpikService(api as any);
       await service.start(
         createServiceContext(true, {
           enabled: true,
           apiKey: "my-key",
-          projectName: "  my-project  ",
-          workspaceName: "  my-workspace  ",
+          duckdbPath: "  /tmp/spaced.duckdb  ",
         }) as any,
       );
 
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "my-key",
-        projectName: "my-project",
-        workspaceName: "my-workspace",
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/tmp/spaced.duckdb",
       });
-      expect(mockRetrieveProject).toHaveBeenCalledWith(
-        { name: "my-project" },
-        { workspaceName: "my-workspace" },
-      );
     });
 
     test("prefers pluginConfig over runtime service config", async () => {
@@ -233,168 +235,98 @@ describe("opik service", () => {
       const service = createOpikService(api as any, {
         enabled: true,
         apiKey: "plugin-key",
-        apiUrl: "https://plugin-opik.example.com",
-        projectName: "plugin-project",
-        workspaceName: "plugin-workspace",
+        duckdbPath: "/plugin/path.duckdb",
       });
 
       await service.start(
         createServiceContext(true, {
           enabled: false,
           apiKey: "runtime-key",
-          apiUrl: "https://runtime-opik.example.com",
-          projectName: "runtime-project",
-          workspaceName: "runtime-workspace",
+          duckdbPath: "/runtime/path.duckdb",
         }) as any,
       );
 
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "plugin-key",
-        apiUrl: "https://plugin-opik.example.com",
-        projectName: "plugin-project",
-        workspaceName: "plugin-workspace",
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/plugin/path.duckdb",
       });
     });
 
-    test("falls back to env vars for client config", async () => {
-      process.env.OPIK_API_KEY = "env-key";
-      process.env.OPIK_URL_OVERRIDE = "https://env-opik.example.com";
-      process.env.OPIK_PROJECT_NAME = "env-project";
-      process.env.OPIK_WORKSPACE = "env-workspace";
+    test("falls back to OPIK_DUCKDB_PATH when config omits duckdbPath", async () => {
+      process.env.OPIK_DUCKDB_PATH = "/env/from-env.duckdb";
 
       const { api } = createApi();
       const service = createOpikService(api as any);
       await service.start(createServiceContext(true, { enabled: true }) as any);
 
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "env-key",
-        apiUrl: "https://env-opik.example.com",
-        projectName: "env-project",
-        workspaceName: "env-workspace",
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/env/from-env.duckdb",
       });
     });
 
-    test("trims project and workspace names from env vars", async () => {
-      process.env.OPIK_API_KEY = "env-key";
-      process.env.OPIK_PROJECT_NAME = "  env-project  ";
-      process.env.OPIK_WORKSPACE = "  env-workspace  ";
+    test("prefers config duckdbPath over OPIK_DUCKDB_PATH", async () => {
+      process.env.OPIK_DUCKDB_PATH = "/env/from-env.duckdb";
 
       const { api } = createApi();
       const service = createOpikService(api as any);
-      await service.start(createServiceContext(true, { enabled: true }) as any);
-
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "env-key",
-        projectName: "env-project",
-        workspaceName: "env-workspace",
-      });
-      expect(mockRetrieveProject).toHaveBeenCalledWith(
-        { name: "env-project" },
-        { workspaceName: "env-workspace" },
+      await service.start(
+        createServiceContext(true, {
+          enabled: true,
+          duckdbPath: "/config/wins.duckdb",
+        }) as any,
       );
+
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/config/wins.duckdb",
+      });
     });
 
-    test("falls back to defaults when trimmed env vars are empty", async () => {
-      process.env.OPIK_API_KEY = "env-key";
-      process.env.OPIK_PROJECT_NAME = "   ";
-      process.env.OPIK_WORKSPACE = "   ";
+    test("treats whitespace-only duckdbPath as unset and uses env", async () => {
+      process.env.OPIK_DUCKDB_PATH = "/env/fallback.duckdb";
 
       const { api } = createApi();
       const service = createOpikService(api as any);
-      await service.start(createServiceContext(true, { enabled: true }) as any);
-
-      expect(mockOpikConstructor).toHaveBeenCalledWith({
-        apiKey: "env-key",
-        projectName: "openclaw",
-        workspaceName: "default",
-      });
-      expect(mockRetrieveProject).toHaveBeenCalledWith(
-        { name: "openclaw" },
-        { workspaceName: "default" },
+      await service.start(
+        createServiceContext(true, {
+          enabled: true,
+          duckdbPath: "   ",
+        }) as any,
       );
+
+      expect(mockDuckDBConstructor).toHaveBeenCalledWith({
+        path: "/env/fallback.duckdb",
+      });
     });
 
     test("registers typed hooks at service construction; diagnostic listener on start", async () => {
-      const { api } = createApi();
+      const { api, registerHook } = createApi();
       const service = createOpikService(api as any);
 
-      expect(api.on).toHaveBeenCalledTimes(10);
-      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("llm_output", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("before_tool_call", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("after_tool_call", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("subagent_spawning", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("subagent_delivery_target", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("subagent_spawned", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("subagent_ended", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("tool_result_persist", expect.any(Function));
-      expect(api.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
+      expect(registerHook).toHaveBeenCalledTimes(10);
+      const registered = new Set(registerHook.mock.calls.map((c) => c[0]));
+      for (const name of [
+        "llm_input",
+        "llm_output",
+        "before_tool_call",
+        "after_tool_call",
+        "subagent_spawning",
+        "subagent_delivery_target",
+        "subagent_spawned",
+        "subagent_ended",
+        "tool_result_persist",
+        "agent_end",
+      ]) {
+        expect(registered.has(name)).toBe(true);
+      }
 
       expect(diagnosticListeners).toHaveLength(0);
       await service.start(createServiceContext() as any);
       expect(diagnosticListeners).toHaveLength(1);
     });
 
-    test("validates configured project in the configured workspace on start", async () => {
-      const { api } = createApi();
-      const service = createOpikService(api as any);
-      await service.start(
-        createServiceContext(true, {
-          enabled: true,
-          apiKey: "my-key",
-          projectName: "demo-project",
-          workspaceName: "demo-workspace",
-        }) as any,
-      );
-
-      expect(mockRetrieveProject).toHaveBeenCalledWith(
-        { name: "demo-project" },
-        { workspaceName: "demo-workspace" },
-      );
-    });
-
-    test("warns clearly when the configured project does not exist", async () => {
-      mockRetrieveProject.mockRejectedValueOnce({ statusCode: 404 });
-      const { api } = createApi();
-      const ctx = createServiceContext(true, {
-        enabled: true,
-        apiKey: "my-key",
-        projectName: "missing-project",
-        workspaceName: "demo-workspace",
-      });
-      const service = createOpikService(api as any);
-
-      await service.start(ctx as any);
-
-      expect(ctx.logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('configured project "missing-project" was not found'),
-      );
-      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
-    });
-
-    test("warns clearly when the API key cannot access the configured project", async () => {
-      mockRetrieveProject.mockRejectedValueOnce({ statusCode: 403 });
-      const { api } = createApi();
-      const ctx = createServiceContext(true, {
-        enabled: true,
-        apiKey: "my-key",
-        projectName: "private-project",
-        workspaceName: "demo-workspace",
-      });
-      const service = createOpikService(api as any);
-
-      await service.start(ctx as any);
-
-      expect(ctx.logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('could not access project "private-project"'),
-      );
-      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
-    });
-
     test("tool_result_persist is always registered; handler no-ops until sanitize is enabled in start()", async () => {
-      const { api, hooks } = createApi();
+      const { api, hooks, registerHook } = createApi();
       const service = createOpikService(api as any);
-      expect(api.on).toHaveBeenCalledWith("tool_result_persist", expect.any(Function));
+      expect(registerHook.mock.calls.some((c) => c[0] === "tool_result_persist")).toBe(true);
 
       await service.start(
         createServiceContext(true, {
@@ -1754,7 +1686,7 @@ describe("opik service", () => {
       expect(result).toBeUndefined();
     });
 
-    test("is not registered when tool_result_persist sanitization is disabled", async () => {
+    test("tool_result_persist handler returns early when sanitization is disabled", async () => {
       const { api, hooks } = createApi();
       const service = createOpikService(api as any);
       await service.start(
@@ -1765,7 +1697,14 @@ describe("opik service", () => {
         }) as any,
       );
 
-      expect(hooks.tool_result_persist).toBeUndefined();
+      expect(hooks.tool_result_persist).toEqual(expect.any(Function));
+      const result = invokeHook(
+        hooks,
+        "tool_result_persist",
+        { toolName: "t", message: { role: "tool", content: "x" } },
+        { sessionKey: "s1" },
+      );
+      expect(result).toBeUndefined();
     });
   });
 
@@ -1839,8 +1778,8 @@ describe("opik service", () => {
       // Orphaned tool span closed synchronously by agent_end
       expect(mockToolSpan.end).toHaveBeenCalled();
 
-      // Trace finalization is deferred to microtask
-      await Promise.resolve();
+      // Trace finalization is deferred (setTimeout(0))
+      await flushDeferredFinalize();
 
       // Trace should be updated with merged metadata
       expect(mockTrace.update).toHaveBeenCalledWith(
@@ -1879,7 +1818,7 @@ describe("opik service", () => {
         agentCtx("s1"),
       );
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       expect(mockTrace.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1904,7 +1843,7 @@ describe("opik service", () => {
       invokeHook(hooks, "llm_input", { model: "m", provider: "p", prompt: "" }, agentCtx("s1"));
       invokeHook(hooks, "agent_end", { success: true, durationMs: 100 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const updateCall = mockTrace.update.mock.calls[0][0];
       expect(updateCall.errorInfo).toBeUndefined();
@@ -1942,7 +1881,7 @@ describe("opik service", () => {
 
       invokeHook(hooks, "agent_end", { success: true, durationMs: 500 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // Single consolidated trace.update from finalizeTrace
       const agentEndCall = mockTrace.update.mock.calls.find(
@@ -1999,7 +1938,7 @@ describe("opik service", () => {
       );
       invokeHook(hooks, "agent_end", { success: true, durationMs: 500 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const metadata = mockTrace.update.mock.calls[0][0].metadata;
       expect(metadata.provider).toBe("openai");
@@ -2036,7 +1975,7 @@ describe("opik service", () => {
 
       invokeHook(hooks, "agent_end", { success: true, durationMs: 500 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const metadata = mockTrace.update.mock.calls[0][0].metadata as Record<string, unknown>;
       expect(metadata.usage).toEqual(expect.objectContaining({ total: 150 }));
@@ -2050,7 +1989,7 @@ describe("opik service", () => {
       // No llm_input — no active trace
       invokeHook(hooks, "agent_end", { success: true, durationMs: 0 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       expect(mockFlush).not.toHaveBeenCalled();
     });
@@ -2096,7 +2035,7 @@ describe("opik service", () => {
       expect(mockTrace.update).not.toHaveBeenCalled();
       expect(mockTrace.end).not.toHaveBeenCalled();
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // After microtask: single consolidated trace.update with both output and metadata
       expect(mockTrace.update).toHaveBeenCalledTimes(1);
@@ -2148,7 +2087,7 @@ describe("opik service", () => {
         agentCtx("s1"),
       );
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // Output should be extracted from last assistant message
       expect(mockTrace.update).toHaveBeenCalledWith(
@@ -2191,7 +2130,7 @@ describe("opik service", () => {
       // No llm_output — go straight to agent_end
       invokeHook(hooks, "agent_end", { success: true, durationMs: 400 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const metadata = mockTrace.update.mock.calls[0][0].metadata;
       // Usage should fall back to costMeta values since llm_output never fired
@@ -2220,7 +2159,7 @@ describe("opik service", () => {
       expect(mockTrace.update).not.toHaveBeenCalled();
       expect(mockTrace.end).not.toHaveBeenCalled();
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // After microtask: finalization happened
       expect(mockTrace.update).toHaveBeenCalled();
@@ -2273,7 +2212,7 @@ describe("opik service", () => {
         agentCtx("s1"),
       );
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // llm_output path wins: output is "" (joined empty array), lastAssistant is undefined
       expect(mockTrace.update).toHaveBeenCalledWith(
@@ -2319,7 +2258,7 @@ describe("opik service", () => {
       // Now end the agent to inspect the merged metadata
       invokeHook(hooks, "agent_end", { success: true, durationMs: 10 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       expect(mockTrace.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2355,7 +2294,7 @@ describe("opik service", () => {
 
       invokeHook(hooks, "agent_end", { success: true, durationMs: 2000 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const agentEndCall = mockTrace.update.mock.calls.find(
         (c: unknown[]) =>
@@ -2403,7 +2342,7 @@ describe("opik service", () => {
       });
 
       invokeHook(hooks, "agent_end", { success: true, durationMs: 10 }, agentCtx("s1"));
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       const metadata = mockTrace.update.mock.calls[0][0].metadata;
       expect(metadata.provider).toBe("openai");
@@ -2427,7 +2366,7 @@ describe("opik service", () => {
 
       invokeHook(hooks, "agent_end", { success: true, durationMs: 10 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await flushDeferredFinalize();
 
       // costMeta should be empty (no model.usage was dispatched)
       const metadata = mockTrace.update.mock.calls[0][0].metadata;
@@ -2663,13 +2602,14 @@ describe("opik service", () => {
       invokeHook(hooks, "llm_input", { model: "m", provider: "p", prompt: "" }, agentCtx("s1"));
       invokeHook(hooks, "agent_end", { success: true, durationMs: 10 }, agentCtx("s1"));
 
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1);
       await vi.waitFor(() => expect(mockFlush).toHaveBeenCalledTimes(1));
 
-      vi.advanceTimersByTime(10);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10);
       await vi.waitFor(() => expect(mockFlush).toHaveBeenCalledTimes(2));
       expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining("flush failed"));
+
+      vi.useRealTimers();
     });
 
     test("does not throw when flush rejects", async () => {

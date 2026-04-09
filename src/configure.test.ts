@@ -2,11 +2,12 @@ import { Command } from "commander";
 import { describe, expect, test, vi } from "vitest";
 import {
   getOpikPluginEntry,
-  getApiKeyHelpText,
   registerOpikCli,
+  resolveEffectiveDuckdbPath,
   setOpikPluginEntry,
   showOpikStatus,
 } from "./configure.js";
+import { DEFAULT_TRULENS_DUCKDB_PATH } from "./storage/duckdb-trulens-writer.js";
 
 describe("configure helpers", () => {
   test("setOpikPluginEntry writes plugins.entries.opik-openclaw", () => {
@@ -14,10 +15,7 @@ describe("configure helpers", () => {
       {} as any,
       {
         enabled: true,
-        apiKey: "test-key",
-        apiUrl: "https://opik.example.com",
-        projectName: "test-project",
-        workspaceName: "test-workspace",
+        duckdbPath: "/tmp/traces.duckdb",
         tags: ["tag-a", "tag-b"],
       },
       true,
@@ -26,10 +24,7 @@ describe("configure helpers", () => {
     expect(next.plugins.entries["opik-openclaw"].enabled).toBe(true);
     expect(next.plugins.entries["opik-openclaw"].config).toEqual({
       enabled: true,
-      apiKey: "test-key",
-      apiUrl: "https://opik.example.com",
-      projectName: "test-project",
-      workspaceName: "test-workspace",
+      duckdbPath: "/tmp/traces.duckdb",
       tags: ["tag-a", "tag-b"],
     });
   });
@@ -41,7 +36,7 @@ describe("configure helpers", () => {
           "opik-openclaw": {
             enabled: false,
             config: {
-              projectName: "project-x",
+              duckdbPath: "/x/y.duckdb",
             },
           },
         },
@@ -49,25 +44,26 @@ describe("configure helpers", () => {
     } as any);
 
     expect(parsed.enabled).toBe(false);
-    expect(parsed.config.projectName).toBe("project-x");
+    expect(parsed.config.duckdbPath).toBe("/x/y.duckdb");
   });
 
-  test("getApiKeyHelpText includes free signup guidance for cloud", () => {
-    expect(getApiKeyHelpText("cloud", "https://www.comet.com/")).toEqual([
-      "You can find your Opik API key here:\nhttps://www.comet.com/account-settings/apiKeys",
-      "No Opik Cloud account yet? Sign up for a free account:\nhttps://www.comet.com/signup?from=llm&source=openclaw",
-    ]);
-  });
-
-  test("getApiKeyHelpText omits cloud signup guidance for self-hosted", () => {
-    expect(getApiKeyHelpText("self-hosted", "https://opik.example.com/")).toEqual([
-      "You can find your Opik API key here:\nhttps://opik.example.com/account-settings/apiKeys",
-    ]);
+  test("resolveEffectiveDuckdbPath prefers config over env over default", () => {
+    const prev = process.env.OPIK_DUCKDB_PATH;
+    try {
+      process.env.OPIK_DUCKDB_PATH = "/env/path.duckdb";
+      expect(resolveEffectiveDuckdbPath({ duckdbPath: "/cfg.duckdb" })).toBe("/cfg.duckdb");
+      expect(resolveEffectiveDuckdbPath({})).toBe("/env/path.duckdb");
+      delete process.env.OPIK_DUCKDB_PATH;
+      expect(resolveEffectiveDuckdbPath({})).toBe(DEFAULT_TRULENS_DUCKDB_PATH);
+    } finally {
+      if (prev === undefined) delete process.env.OPIK_DUCKDB_PATH;
+      else process.env.OPIK_DUCKDB_PATH = prev;
+    }
   });
 });
 
 describe("opik status command", () => {
-  test("reads plugin entry and masks api key", async () => {
+  test("reads plugin entry and shows DuckDB path", async () => {
     const program = new Command();
     const loadConfig = () =>
       ({
@@ -77,10 +73,7 @@ describe("opik status command", () => {
               enabled: true,
               config: {
                 enabled: true,
-                apiUrl: "https://opik.example.com",
-                projectName: "demo",
-                workspaceName: "default",
-                apiKey: "secret-key",
+                duckdbPath: "/data/traces.duckdb",
                 tags: ["prod"],
               },
             },
@@ -89,7 +82,7 @@ describe("opik status command", () => {
       }) as any;
 
     registerOpikCli({
-      program, // keep a smoke-level check that command registration still succeeds
+      program,
       loadConfig,
       writeConfigFile: async () => undefined,
     });
@@ -101,9 +94,9 @@ describe("opik status command", () => {
     });
     const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
     logSpy.mockRestore();
-    expect(output).toContain("Enabled:    yes");
-    expect(output).toContain("API key:    ***");
-    expect(output).not.toContain("secret-key");
+    expect(output).toContain("Enabled:        yes");
+    expect(output).toContain("/data/traces.duckdb");
+    expect(output).toContain("Tags:           prod");
   });
 
   test("status command is registered under openclaw opik", () => {
@@ -118,11 +111,7 @@ describe("opik status command", () => {
                 enabled: true,
                 config: {
                   enabled: true,
-                  apiUrl: "https://opik.example.com",
-                  projectName: "demo",
-                  workspaceName: "default",
-                  apiKey: "secret-key",
-                  tags: ["prod"],
+                  duckdbPath: "/x.duckdb",
                 },
               },
             },

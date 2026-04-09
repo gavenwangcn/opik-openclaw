@@ -35,6 +35,10 @@ declare module "openclaw/plugin-sdk" {
 
   export type OpenClawPluginApi = {
     pluginConfig?: unknown;
+    logger: {
+      info: (message: string) => void;
+      warn: (message: string) => void;
+    };
     registerService: (service: OpenClawPluginService) => void;
     registerCli: (
       register: (params: { program: any }) => void,
@@ -46,7 +50,11 @@ declare module "openclaw/plugin-sdk" {
         writeConfigFile: (cfg: OpenClawConfig) => Promise<void>;
       };
     };
-    on: (event: string, handler: (event: any, ctx: any) => void) => void;
+    on: (
+      event: string,
+      handler: (event: any, ctx: any) => void,
+      opts?: unknown,
+    ) => void;
   };
 
   export function onDiagnosticEvent(

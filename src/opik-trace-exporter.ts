@@ -4,7 +4,6 @@ import type {
   OpenClawPluginService,
 } from "openclaw/plugin-sdk";
 import { onDiagnosticEvent } from "openclaw/plugin-sdk";
-import { Opik, type Span, type Trace } from "opik";
 import { createAttachmentUploader } from "./service/attachment-uploader.js";
 import { registerOpikTraceHooks } from "./register-opik-hooks.js";
 import {
@@ -12,6 +11,8 @@ import {
   setSharedOpikClient,
   setSharedOpikRuntimeConfig,
 } from "./shared-opik-runtime.js";
+import { LocalTracer } from "./local-tracer.js";
+import { DuckDBTruLensWriter } from "./storage/duckdb-trulens-writer.js";
 import {
   ATTACHMENT_UPLOADS_ENABLED,
   DEFAULT_ATTACHMENT_BASE_URL,
@@ -51,11 +52,12 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   registerHookHandlers(api: OpenClawPluginApi): void;
 } {
   const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  let client: Opik | null = null;
+  let client: { trace: (p: any) => any; flush: () => Promise<void> } | null = null;
+  let writer: DuckDBTruLensWriter | null = null;
   const activeTraces = new Map<string, ActiveTrace>();
   const subagentSpanHosts = new Map<
     string,
-    { hostSessionKey: string; active: ActiveTrace; span: Span }
+    { hostSessionKey: string; active: ActiveTrace; span: any }
   >();
   const sessionByAgentId = new Map<string, string>();
   let cleanup: (() => void) | null = null;
@@ -80,7 +82,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
   let toolResultPersistSanitizeEnabled = false;
   const hookInstallFlags = { instrumentPluginApiApplied: false };
 
-  function getEffectiveClient(): Opik | null {
+  function getEffectiveClient(): { trace: (p: any) => any; flush: () => Promise<void> } | null {
     return getSharedOpikRuntimeState().client ?? client;
   }
 
@@ -156,14 +158,14 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     sessionKey: string,
     hostSessionKey: string,
     active: ActiveTrace,
-    span: Span,
+    span: any,
   ): void {
     subagentSpanHosts.set(sessionKey, { hostSessionKey, active, span });
   }
 
   function getSubagentSpanHost(
     sessionKey: string,
-  ): { hostSessionKey: string; active: ActiveTrace; span: Span } | undefined {
+  ): { hostSessionKey: string; active: ActiveTrace; span: any } | undefined {
     return subagentSpanHosts.get(sessionKey);
   }
 
@@ -187,7 +189,11 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     );
   }
 
-  function safeTraceUpdate(traceRef: Trace, payload: Record<string, unknown>, reason: string): void {
+  function safeTraceUpdate(
+    traceRef: { update: (p: Record<string, unknown>) => void },
+    payload: Record<string, unknown>,
+    reason: string,
+  ): void {
     try {
       traceRef.update(payload);
     } catch (err) {
@@ -196,16 +202,20 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     }
   }
 
-  function safeTraceEnd(traceRef: Trace, reason: string): void {
+  function safeTraceEnd(traceRef: { end: () => Promise<void> | void }, reason: string): void {
     try {
-      traceRef.end();
+      void traceRef.end();
     } catch (err) {
       exporterMetrics.traceEndErrors += 1;
       log.warn(`opik: trace.end failed (${reason}): ${formatError(err)}`);
     }
   }
 
-  function safeSpanUpdate(span: Span, payload: Record<string, unknown>, reason: string): void {
+  function safeSpanUpdate(
+    span: { update: (p: Record<string, unknown>) => void },
+    payload: Record<string, unknown>,
+    reason: string,
+  ): void {
     try {
       span.update(payload);
     } catch (err) {
@@ -214,9 +224,9 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     }
   }
 
-  function safeSpanEnd(span: Span, reason: string): void {
+  function safeSpanEnd(span: { end: () => Promise<void> | void }, reason: string): void {
     try {
-      span.end();
+      void span.end();
     } catch (err) {
       exporterMetrics.spanEndErrors += 1;
       log.warn(`opik: span.end failed (${reason}): ${formatError(err)}`);
@@ -253,7 +263,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
 
   function resolveSessionSpanContainer(
     sessionKey: string,
-  ): { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined {
+  ): { sessionKey: string; active: ActiveTrace; parent: any } | undefined {
     const spanHost = getSubagentSpanHost(sessionKey);
     if (spanHost) {
       return {
@@ -275,7 +285,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
     requesterSessionKey?: string;
     childSessionKey?: string;
     targetSessionKey?: string;
-  }): { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined {
+  }): { sessionKey: string; active: ActiveTrace; parent: any } | undefined {
     if (params.requesterSessionKey) {
       const requesterContainer = resolveSessionSpanContainer(params.requesterSessionKey);
       if (requesterContainer) {
@@ -329,65 +339,6 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
 
   function scheduleFlush(reason: string): void {
     flushQueue = flushQueue.then(() => flushWithRetry(reason)).catch(() => undefined);
-  }
-
-  function trimOrUndefined(value: string | undefined): string | undefined {
-    if (typeof value !== "string") return undefined;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-
-  async function validateProjectTarget(params: {
-    client: unknown;
-    projectName: string;
-    workspaceName: string;
-  }): Promise<void> {
-    const retrieveProject =
-      typeof params.client === "object" &&
-      params.client !== null &&
-      "projects" in params.client &&
-      typeof (params.client as { projects?: { retrieveProject?: unknown } }).projects?.retrieveProject ===
-        "function"
-        ? ((params.client as {
-            projects: {
-              retrieveProject: (
-                request: { name: string },
-                requestOptions?: { workspaceName?: string },
-              ) => Promise<unknown>;
-            };
-          }).projects.retrieveProject)
-        : undefined;
-    if (!retrieveProject) return;
-
-    try {
-      await retrieveProject(
-        { name: params.projectName },
-        { workspaceName: params.workspaceName },
-      );
-    } catch (err) {
-      const statusCode =
-        typeof err === "object" && err !== null && "statusCode" in err
-          ? (err as { statusCode?: unknown }).statusCode
-          : undefined;
-
-      if (statusCode === 404) {
-        log.warn(
-          `opik: configured project "${params.projectName}" was not found in workspace "${params.workspaceName}"; traces may not appear until the project exists or the plugin is reconfigured`,
-        );
-        return;
-      }
-
-      if (statusCode === 403) {
-        log.warn(
-          `opik: could not access project "${params.projectName}" in workspace "${params.workspaceName}" (forbidden); verify the API key and workspace permissions`,
-        );
-        return;
-      }
-
-      log.warn(
-        `opik: could not validate project "${params.projectName}" in workspace "${params.workspaceName}": ${formatError(err)}`,
-      );
-    }
   }
 
   /** Consolidate output + metadata into a single trace.update() + trace.end(). */
@@ -482,7 +433,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
    * Defer trace finalize to a macrotask so host-scheduled `llm_output` hooks (which may run
    * after `agent_end` in the same event-loop turn) can update the LLM span before we end the trace.
    */
-  function scheduleTraceFinalize(sessionKey: string, traceRef: Trace): void {
+  function scheduleTraceFinalize(sessionKey: string, traceRef: any): void {
     const handle = setTimeout(() => {
       pendingFinalizeHandles.delete(handle);
       const current = activeTraces.get(sessionKey);
@@ -548,15 +499,13 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         `opik[#${instanceId}]: start begin (enabled=true) cfgKeys=${Object.keys(opikCfg as Record<string, unknown>).sort().join(",") || "(none)"}`,
       );
 
-      const apiKey = opikCfg.apiKey ?? process.env.OPIK_API_KEY;
-      const apiUrl = opikCfg.apiUrl ?? process.env.OPIK_URL_OVERRIDE;
-      const projectName = opikCfg.projectName ?? trimOrUndefined(process.env.OPIK_PROJECT_NAME) ?? "openclaw";
-      const workspaceName =
-        opikCfg.workspaceName ?? trimOrUndefined(process.env.OPIK_WORKSPACE) ?? "default";
+      const duckdbPath = opikCfg.duckdbPath ?? process.env.OPIK_DUCKDB_PATH;
+      const projectName = "local";
+      const workspaceName = "local";
       const tags = opikCfg.tags ?? ["openclaw"];
       hookProjectName = projectName;
       hookTags = tags;
-      attachmentBaseUrl = (apiUrl ?? DEFAULT_ATTACHMENT_BASE_URL).replace(/\/+$/, "");
+      attachmentBaseUrl = DEFAULT_ATTACHMENT_BASE_URL.replace(/\/+$/, "");
       setSharedOpikRuntimeConfig({
         instanceId,
         config: {
@@ -566,12 +515,6 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
           attachmentBaseUrl,
         },
       });
-
-      if (!apiKey) {
-        log.warn(
-          `opik[#${instanceId}]: start warning (no apiKey) — set plugins.entries.opik-openclaw.config.apiKey or OPIK_API_KEY; local deployments may still work depending on server config`,
-        );
-      }
 
       staleTraceCleanupEnabled = opikCfg.staleTraceCleanupEnabled !== false;
       staleTraceTimeoutMs = Math.max(
@@ -588,24 +531,18 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
       flushRetryBaseDelayMs = asNonNegativeNumber(opikCfg.flushRetryBaseDelayMs) ??
         DEFAULT_FLUSH_RETRY_BASE_DELAY_MS;
 
-      log.info(
-        `opik[#${instanceId}]: creating client apiUrl=${apiUrl ?? "(default)"} workspace=${workspaceName} project=${projectName} tags=${tags.join(",")}`,
-      );
-      client = new Opik({
-        apiKey,
-        ...(apiUrl ? { apiUrl } : {}),
-        projectName,
-        workspaceName,
-      });
+      writer = new DuckDBTruLensWriter({ path: duckdbPath });
+      await writer.ensureReady();
+      const tracer = new LocalTracer(writer);
+      client = {
+        trace: (params: any) => tracer.trace(params),
+        flush: () => tracer.flush(),
+      };
       setSharedOpikClient({ instanceId, client });
 
-      log.info(`opik[#${instanceId}]: validating project target...`);
-      await validateProjectTarget({
-        client,
-        projectName,
-        workspaceName,
-      });
-      log.info(`opik[#${instanceId}]: client ready`);
+      log.info(
+        `opik[#${instanceId}]: local DuckDB trace store ready path=${writer.getDbPath()} tags=${tags.join(",")}`,
+      );
 
       if (hookInstallFlags.instrumentPluginApiApplied) {
         log.info(
@@ -703,7 +640,7 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         `opik[#${instanceId}]: typed hook names (instrumented list): ${OPIK_INSTRUMENTED_TYPED_HOOK_NAMES.join(", ")}; also tool_result_persist, agent_end`,
       );
       log.info(
-        `opik[#${instanceId}]: exporting traces to project "${projectName}" (staleCleanup=${staleTraceCleanupEnabled ? "on" : "off"}, staleTimeoutMs=${staleTraceTimeoutMs}, staleSweepMs=${staleSweepIntervalMs}, flushRetryCount=${flushRetryCount}, flushRetryBaseDelayMs=${flushRetryBaseDelayMs})`,
+        `opik[#${instanceId}]: exporting traces to DuckDB (staleCleanup=${staleTraceCleanupEnabled ? "on" : "off"}, staleTimeoutMs=${staleTraceTimeoutMs}, staleSweepMs=${staleSweepIntervalMs}, flushRetryCount=${flushRetryCount}, flushRetryBaseDelayMs=${flushRetryBaseDelayMs})`,
       );
     },
 
@@ -728,6 +665,8 @@ export function createOpikTraceExporter(pluginConfig: OpikPluginConfig = {}): {
         await flushWithRetry("service stop");
         client = null;
       }
+      await writer?.close().catch(() => undefined);
+      writer = null;
 
       log.info(
         `opik[#${instanceId}]: exporter metrics flushSuccesses=${exporterMetrics.flushSuccesses} flushFailures=${exporterMetrics.flushFailures} flushRetries=${exporterMetrics.flushRetries} traceUpdateErrors=${exporterMetrics.traceUpdateErrors} traceEndErrors=${exporterMetrics.traceEndErrors} spanUpdateErrors=${exporterMetrics.spanUpdateErrors} spanEndErrors=${exporterMetrics.spanEndErrors}`,

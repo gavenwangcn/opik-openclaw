@@ -13,8 +13,8 @@
 </h1>
 
 <p align="center">
-  Official plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> that exports agent traces to <br/>
-  <a href="https://www.comet.com/docs/opik/">Opik</a> for observability and monitoring.
+  Official plugin for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> that persists agent traces to a <strong>local DuckDB</strong> file
+  (TruLens-compatible <code>trulens_events</code> plus <code>audit_sessions</code> / <code>audit_actions</code> for UI migration).
 </p>
 
 <div align="center">
@@ -28,14 +28,15 @@
 
 ## Why This Plugin
 
-[Opik](https://github.com/comet-ml/opik) is a leading open-source LLM and agent observability, tracing, evaluation and optimization platform.
-`@opik/opik-openclaw` adds native Opik tracing for OpenClaw runs:
+`@opik/opik-openclaw` records OpenClaw runs into a **local DuckDB** database (no Opik cloud/API required):
 
 - LLM request/response spans
 - Sub-agent request/response spans
 - Tool call spans with inputs, outputs, and errors
 - Run-level finalize metadata
-- Usage and cost metadata
+- Usage and cost metadata (including `model.usage` diagnostics)
+
+Rows are stored in **`trulens_events`** with columns aligned to TruLens `SQLAlchemyDB`’s `Event` model so you can point **TruLens `DefaultDBConnector`** (or your own SQL) at the same file for evaluation. Auxiliary **`audit_*`** tables mirror `openclaw-observability` for future UI reuse.
 
 The plugin runs inside the OpenClaw Gateway process. If your gateway is remote, install and configure the plugin on that host.
 
@@ -66,7 +67,7 @@ If the Gateway is already running, restart it after install.
 openclaw opik configure
 ```
 
-The setup wizard validates endpoint and credentials, then writes config under `plugins.entries.opik-openclaw`. If you choose Opik Cloud and do not have an account yet, the wizard now points you to the free signup flow before asking for an API key.
+The setup wizard writes config under `plugins.entries.opik-openclaw`. Set **`duckdbPath`** (or **`OPIK_DUCKDB_PATH`**) to control where the database file is created; otherwise a default under your user home (`.openclaw/data/`) is used.
 
 ### 3. Check effective settings
 
@@ -81,7 +82,7 @@ openclaw gateway run
 openclaw message send "hello from openclaw"
 ```
 
-Then confirm traces in your Opik project.
+Then inspect the DuckDB file (see **Local storage** below) or run the optional verification script.
 
 ## Configuration
 
@@ -94,13 +95,8 @@ Then confirm traces in your Opik project.
       "opik-openclaw": {
         "enabled": true,
         "config": {
-          // base configuration
           "enabled": true,
-          "apiKey": "your-api-key",
-          "apiUrl": "https://www.comet.com/opik/api",
-          "projectName": "openclaw",
-          "workspaceName": "default",
-          // optional advanced configuration
+          "duckdbPath": "/path/to/opik-openclaw.trulens.duckdb",
           "tags": ["openclaw"],
           "toolResultPersistSanitizeEnabled": false,
           "staleTraceCleanupEnabled": true,
@@ -114,6 +110,8 @@ Then confirm traces in your Opik project.
   }
 }
 ```
+
+Legacy keys `apiKey`, `apiUrl`, `projectName`, and `workspaceName` are ignored for storage (kept only for older config files).
 
 ### Plugin trust allowlist
 
@@ -129,15 +127,27 @@ OpenClaw warns when `plugins.allow` is empty and a community plugin is discovere
 
 ### Environment fallbacks
 
-- `OPIK_API_KEY`
-- `OPIK_URL_OVERRIDE`
-- `OPIK_PROJECT_NAME`
-- `OPIK_WORKSPACE`
+- `OPIK_DUCKDB_PATH` — default DuckDB file path if `duckdbPath` is not set in config
+- (Deprecated / ignored for local storage) `OPIK_API_KEY`, `OPIK_URL_OVERRIDE`, `OPIK_PROJECT_NAME`, `OPIK_WORKSPACE`
 
 ### Transcript safety default
 
 `toolResultPersistSanitizeEnabled` is disabled by default. When enabled, the plugin rewrites local
 image refs in persisted tool transcript messages via `tool_result_persist`.
+
+## Local storage
+
+- Default file (when no path is configured): `~/.openclaw/data/opik-openclaw.trulens.duckdb` (see `src/storage/duckdb-trulens-writer.ts`).
+- Main table: **`trulens_events`** (`event_id`, JSON `record` / `record_attributes` / `trace`, timestamps, etc.).
+- Compatibility: **`audit_sessions`**, **`audit_actions`** (aligned with `openclaw-observability`).
+
+Quick check (Python + [duckdb](https://duckdb.org/docs/api/python/overview)):
+
+```bash
+python scripts/verify-duckdb-events.py ~/.openclaw/data/opik-openclaw.trulens.duckdb
+```
+
+To consume events from TruLens Python, configure your `DefaultDBConnector` (or equivalent) to use this DuckDB file and the `trulens_events` table; JSON columns may deserialize as `dict` or `str` depending on driver—normalize with `json.loads` if needed.
 
 ## CLI commands
 
@@ -145,7 +155,7 @@ image refs in persisted tool transcript messages via `tool_result_persist`.
 | --- | --- |
 | `openclaw plugins install @opik/opik-openclaw` | Install plugin package |
 | `openclaw opik configure` | Interactive setup wizard |
-| `openclaw opik status` | Print effective Opik configuration |
+| `openclaw opik status` | Print effective plugin configuration |
 
 ## Event mapping
 
@@ -170,6 +180,12 @@ Prerequisites:
 
 - Node.js `>=22.12.0`
 - npm `>=10`
+
+If installing inside a monorepo where a dependency runs a failing **postinstall** (e.g. native addons on Windows), use:
+
+```bash
+npm install --ignore-scripts
+```
 
 ```bash
 npm ci

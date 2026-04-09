@@ -2,7 +2,7 @@
   "name": "@opik/opik-openclaw",
   "version": "0.2.8",
   "license": "Apache-2.0",
-  "description": "OpenClaw Opik exporter — sends LLM traces to Opik",
+  "description": "OpenClaw trace exporter — persists LLM traces to local DuckDB (TruLens-compatible events + audit tables)",
   "repository": {
     "type": "git",
     "url": "https://github.com/comet-ml/opik-openclaw"
@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
-    "opik": "^1.10.25",
+    "@duckdb/node-api": "^1.5.0-r.1",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
@@ -48,10 +48,15 @@
     "src/service/hooks/llm.ts",
     "src/service/hooks/tool.ts",
     "src/service/hooks/subagent.ts",
+    "src/storage/duckdb-pool.ts",
+    "src/storage/duckdb-trulens-writer.ts",
+    "src/local-tracer.ts",
+    "src/shared-opik-runtime.ts",
     "src/types.ts",
     "openclaw.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/verify-duckdb-events.py"
   ],
   "openclaw": {
     "extensions": [

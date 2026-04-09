@@ -1,4 +1,4 @@
-import type { Opik } from "opik";
+export type LocalClient = { trace: (p: any) => any; flush: () => Promise<void> };
 
 export type SharedOpikRuntimeConfig = {
   projectName: string;
@@ -9,7 +9,7 @@ export type SharedOpikRuntimeConfig = {
 };
 
 type SharedOpikRuntimeState = {
-  client: Opik | null;
+  client: LocalClient | null;
   config: SharedOpikRuntimeConfig | null;
   lastUpdatedAtMs: number;
   lastUpdatedByInstanceId: string | null;
@@ -39,7 +39,7 @@ export function getSharedOpikRuntimeState(): SharedOpikRuntimeState {
 
 export function setSharedOpikClient(params: {
   instanceId: string;
-  client: Opik;
+  client: LocalClient;
 }): void {
   const state = getSharedOpikRuntimeState();
   state.client = params.client;

@@ -1,5 +1,4 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { Opik, Span, Trace } from "opik";
 import type { ActiveTrace } from "../../types.js";
 import { asNonEmptyString } from "../helpers.js";
 import { logOpikHookEnter } from "../hook-enter-log.js";
@@ -12,25 +11,25 @@ function asStringOrNumber(value: unknown): string | number | undefined {
 
 type SubagentHooksDeps = {
   api: OpenClawPluginApi;
-  getClient: () => Opik | null;
+  getClient: () => unknown | null;
   rememberSessionCorrelation: (sessionKey: string, agentId?: unknown) => void;
   resolveSubagentSpanContainer: (params: {
     requesterSessionKey?: string;
     childSessionKey?: string;
     targetSessionKey?: string;
-  }) => { sessionKey: string; active: ActiveTrace; parent: Trace | Span } | undefined;
+  }) => { sessionKey: string; active: ActiveTrace; parent: any } | undefined;
   getSubagentSpanHost: (
     sessionKey: string,
-  ) => { hostSessionKey: string; active: ActiveTrace; span: Span } | undefined;
+  ) => { hostSessionKey: string; active: ActiveTrace; span: any } | undefined;
   rememberSubagentSpanHost: (
     sessionKey: string,
     hostSessionKey: string,
     active: ActiveTrace,
-    span: Span,
+    span: any,
   ) => void;
   forgetSubagentSpanHost: (sessionKey: string) => void;
-  safeSpanUpdate: (span: Span, payload: Record<string, unknown>, reason: string) => void;
-  safeSpanEnd: (span: Span, reason: string) => void;
+  safeSpanUpdate: (span: { update: (p: Record<string, unknown>) => void }, payload: Record<string, unknown>, reason: string) => void;
+  safeSpanEnd: (span: { end: () => Promise<void> | void }, reason: string) => void;
   warn: (message: string) => void;
   info: (message: string) => void;
   formatError: (err: unknown) => string;
@@ -40,7 +39,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_spawning", (event, subagentCtx) => {
     logOpikHookEnter(deps.info, "subagent_spawning");
     if (!deps.getClient()) {
-      deps.info("opik: event=subagent_spawning phase=skip reason=no_opik_client");
+      deps.info("opik: event=subagent_spawning phase=skip reason=no_local_tracer");
       return;
     }
 
@@ -106,7 +105,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_spawned", (event, subagentCtx) => {
     logOpikHookEnter(deps.info, "subagent_spawned");
     if (!deps.getClient()) {
-      deps.info("opik: event=subagent_spawned phase=skip reason=no_opik_client");
+      deps.info("opik: event=subagent_spawned phase=skip reason=no_local_tracer");
       return;
     }
 
@@ -178,7 +177,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_delivery_target", (event, subagentCtx) => {
     logOpikHookEnter(deps.info, "subagent_delivery_target");
     if (!deps.getClient()) {
-      deps.info("opik: event=subagent_delivery_target phase=skip reason=no_opik_client");
+      deps.info("opik: event=subagent_delivery_target phase=skip reason=no_local_tracer");
       return;
     }
 
@@ -269,7 +268,7 @@ export function registerSubagentHooks(deps: SubagentHooksDeps): void {
   deps.api.on("subagent_ended", (event, subagentCtx) => {
     logOpikHookEnter(deps.info, "subagent_ended");
     if (!deps.getClient()) {
-      deps.info("opik: event=subagent_ended phase=skip reason=no_opik_client");
+      deps.info("opik: event=subagent_ended phase=skip reason=no_local_tracer");
       return;
     }
 

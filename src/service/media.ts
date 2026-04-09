@@ -30,8 +30,9 @@ const MEDIA_EXTENSIONS = new Set([
   ".mkv",
 ]);
 
+/** After `media:`, allow Unix (`/`, `~/`) or Windows (`D:\` / `D:/`) absolute paths. */
 const MEDIA_SCHEME_LOCAL_PATH_RE =
-  /\bmedia:((?:~\/|\/)[^\s"'`]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?=[\s"'`]|$)/gi;
+  /\bmedia:((?:~\/|\/|[A-Za-z]:[/\\])[^\s"'`]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?=[\s"'`]|$)/gi;
 
 const FILE_SCHEME_LOCAL_PATH_RE =
   /\bfile:\/\/((?:~\/|\/)[^\s"'`]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?:\?[^\s"'`]*)?(?=[\s"'`]|$)/gi;
@@ -39,10 +40,13 @@ const FILE_SCHEME_LOCAL_PATH_RE =
 const MARKDOWN_LOCAL_MEDIA_PATH_RE =
   /!?\[[^\]]*]\((?:file:\/\/)?((?:~\/|\/)[^)\s]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|heif|svg|mp3|wav|m4a|aac|ogg|oga|flac|opus|caf|weba|webm|mp4|mov|mkv))(?:\?[^)\s]*)?(?:\s+["'][^"']*["'])?\)/gi;
 
+const WIN_DRIVE_ABS_RE = /^[A-Za-z]:[/\\]/;
+
 export function normalizeLocalMediaPath(candidate: string): string | undefined {
   const trimmed = candidate.trim().replace(/[),.;:]+$/, "");
   if (!trimmed) return undefined;
-  if (!trimmed.startsWith("/") && !trimmed.startsWith("~/")) return undefined;
+  const isUnixStyle = trimmed.startsWith("/") || trimmed.startsWith("~/");
+  if (!isUnixStyle && !WIN_DRIVE_ABS_RE.test(trimmed)) return undefined;
 
   const expanded = trimmed.startsWith("~/") ? resolve(homedir(), trimmed.slice(2)) : trimmed;
   const normalized = resolve(expanded);
